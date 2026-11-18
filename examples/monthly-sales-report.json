@@ -1,0 +1,47 @@
+{
+  "filename": "informe-ventas-noviembre-2026",
+  "settings": {
+    "pageSize": "A4",
+    "orientation": "portrait",
+    "margins": { "top": 44, "bottom": 44, "left": 42, "right": 42 }
+  },
+  "theme": { "preset": "corporate_blue", "fontFamily": "Helvetica" },
+  "metadata": {
+    "title": "Informe ejecutivo de ventas - Noviembre 2026",
+    "author": "Área de Inteligencia de Negocios",
+    "subject": "Resumen mensual de ventas"
+  },
+  "fixedHeader": { "text": "PERFUMERÍAS UNIDAS | INFORME DE GESTIÓN", "showRule": true },
+  "fixedFooter": { "text": "Información confidencial - Uso interno", "showPageNumbers": true },
+  "content": [
+    { "type": "DocumentHeader", "title": "Informe ejecutivo de ventas", "subtitle": "Noviembre 2026 | Consolidado mensual", "badgeText": "CONFIDENCIAL" },
+    { "type": "Text", "text": "Este documento presenta una lectura ejecutiva del desempeño comercial, principales variaciones y acciones recomendadas para el siguiente período.", "size": 10 },
+    { "type": "Grid", "columns": 3, "gap": 8, "children": [
+      { "type": "MetricCard", "label": "Venta neta", "value": "S/ 1,245,800", "trend": "+8.4% vs. mes anterior" },
+      { "type": "MetricCard", "label": "Unidades", "value": "28,450", "trend": "+4.2%" },
+      { "type": "MetricCard", "label": "Ticket promedio", "value": "S/ 43.79", "trend": "+4.0%" }
+    ] },
+    { "type": "SectionTitle", "number": 1, "title": "Resumen ejecutivo" },
+    { "type": "Callout", "variant": "success", "title": "Resultado del período", "content": "Las ventas netas crecieron **8.4%** respecto al mes anterior. El canal digital aportó el mayor crecimiento incremental." },
+    { "type": "SectionTitle", "number": 2, "title": "Evolución mensual" },
+    { "type": "Chart", "chartType": "bar", "title": "Venta neta por mes (miles de S/) ", "labels": ["Ago", "Sep", "Oct", "Nov"], "datasets": [{ "label": "Venta neta", "data": [1080, 1115, 1149, 1246] }] },
+    { "type": "SectionTitle", "number": 3, "title": "Desempeño por canal" },
+    { "type": "DataTable", "columns": [
+      { "key": "channel", "label": "Canal", "width": 35 },
+      { "key": "sales", "label": "Venta neta", "align": "right", "format": "currency", "width": 25 },
+      { "key": "share", "label": "Participación", "align": "right", "format": "percent", "width": 20 },
+      { "key": "growth", "label": "Variación", "align": "right", "width": 20 }
+    ], "rows": [
+      { "channel": "Tiendas", "sales": 782000, "share": 62.8, "growth": "+5.2%" },
+      { "channel": "E-commerce", "sales": 318000, "share": 25.5, "growth": "+18.7%" },
+      { "channel": "Otros", "sales": 145800, "share": 11.7, "growth": "+2.1%" }
+    ] },
+    { "type": "SectionTitle", "number": 4, "title": "Hallazgos y acciones" },
+    { "type": "BulletList", "ordered": true, "items": [
+      "Acelerar campañas digitales en las categorías con mayor conversión.",
+      "Revisar quiebres de stock de los productos de mayor rotación.",
+      "Monitorear margen bruto y descuentos por canal semanalmente."
+    ] },
+    { "type": "Callout", "variant": "warning", "title": "Punto de control", "content": "Validar el cierre contable y la conciliación de ventas antes de distribuir la versión final." }
+  ]
+}

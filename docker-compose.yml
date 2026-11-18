@@ -1,0 +1,36 @@
+services:
+  mcp-pdf:
+    build: .
+    container_name: mcp-pdf-server
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PDF_MCP_TRANSPORT: http
+      PDF_MCP_HOST: 0.0.0.0
+      PDF_MCP_PORT: 3333
+      PDF_MCP_HTTP_PATH: /mcp
+      PDF_MCP_AUTH_TOKEN: ${PDF_MCP_AUTH_TOKEN:?Define PDF_MCP_AUTH_TOKEN en el .env}
+      PDF_MCP_ALLOWED_HOSTS: ${PDF_MCP_ALLOWED_HOSTS:-localhost,127.0.0.1,::1,mcp-pdf}
+      PDF_MCP_ALLOWED_ORIGINS: ${PDF_MCP_ALLOWED_ORIGINS:-http://localhost:3000}
+      PDF_MCP_OUTPUT_DIR: /data/output
+      PDF_MCP_ASSET_DIR: /data/assets
+      PDF_MCP_FONT_DIR: /data/fonts
+      PDF_MCP_ALLOW_REMOTE_IMAGES: ${PDF_MCP_ALLOW_REMOTE_IMAGES:-false}
+      QPDF_PATH: qpdf
+    ports:
+      - "127.0.0.1:3333:3333"
+    volumes:
+      - ./output:/data/output
+      - ./assets:/data/assets:ro
+      - ./assets/fonts:/data/fonts:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2.0

@@ -1,0 +1,30 @@
+{
+  "filename": "factura-demo",
+  "settings": { "pageSize": "A4", "orientation": "portrait" },
+  "theme": { "preset": "modern_minimal" },
+  "metadata": { "title": "Factura de ejemplo", "author": "Comercial" },
+  "content": [
+    { "type": "DocumentHeader", "title": "Factura proforma", "subtitle": "Documento de demostración", "badgeText": "PROFORMA" },
+    { "type": "KeyValueList", "columns": 2, "items": [
+      { "key": "Cliente", "value": "Comercial Andina S.A.C." },
+      { "key": "RUC", "value": "20123456789" },
+      { "key": "Fecha", "value": "2026-11-17" },
+      { "key": "Moneda", "value": "PEN" }
+    ] },
+    { "type": "DataTable", "columns": [
+      { "key": "item", "label": "Descripción", "width": 55 },
+      { "key": "qty", "label": "Cant.", "align": "right", "format": "number", "width": 15 },
+      { "key": "price", "label": "Precio", "align": "right", "format": "currency", "width": 15 },
+      { "key": "amount", "label": "Importe", "align": "right", "format": "currency", "width": 15 }
+    ], "rows": [
+      { "item": "Servicio de consultoría", "qty": 2, "price": 250, "amount": 500 },
+      { "item": "Implementación técnica", "qty": 1, "price": 900, "amount": 900 }
+    ] },
+    { "type": "InvoiceSummary", "currency": "PEN", "subtotal": 1400, "tax": 252, "discount": 0, "total": 1652, "notes": "Precios expresados en soles peruanos." },
+    { "type": "QRCode", "value": "https://example.com/documento/FACT-DEMO-001", "size": 108, "caption": "Consultar documento" },
+    { "type": "SignatureBlock", "signers": [
+      { "name": "María Torres", "role": "Elaborado por" },
+      { "name": "Carlos Díaz", "role": "Aprobado por" }
+    ] }
+  ]
+}

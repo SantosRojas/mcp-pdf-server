@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "pdf": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/mcp-pdf-server/dist/index.js"],
+      "env": {
+        "PDF_MCP_TRANSPORT": "stdio",
+        "PDF_MCP_OUTPUT_DIR": "/ABSOLUTE/PATH/mcp-pdf-server/output",
+        "PDF_MCP_ASSET_DIR": "/ABSOLUTE/PATH/mcp-pdf-server/assets"
+      }
+    }
+  }
+}
