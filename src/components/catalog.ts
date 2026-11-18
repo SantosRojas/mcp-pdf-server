@@ -14,7 +14,7 @@ export const componentCatalog = [
   { name: 'KeyValueList', category: 'data', description: 'Metadatos en una o dos columnas.', required: ['items'], optional: ['columns'], example: { type: 'KeyValueList', columns: 2, items: [{ key: 'Cliente', value: 'Empresa ABC' }, { key: 'RUC', value: '20123456789' }] } },
   { name: 'MetricCard', category: 'data', description: 'Tarjeta KPI indivisible entre páginas.', required: ['label', 'value'], optional: ['trend', 'trendColor', 'description'], example: { type: 'MetricCard', label: 'Ventas netas', value: 'S/ 125,400', trend: '+8.4%' } },
   { name: 'Chart', category: 'data', description: 'Gráfico vectorial bar, line, pie o doughnut.', required: ['chartType', 'labels', 'datasets'], optional: ['title', 'showLegend'], example: { type: 'Chart', chartType: 'bar', labels: ['Ene', 'Feb', 'Mar'], datasets: [{ label: 'Ventas', data: [120, 150, 180] }] } },
-  { name: 'CodeBlock', category: 'technical', description: 'Código SQL/Python/JSON/Bash/YAML resaltado, con numeración y soft-wrap.', required: ['code'], optional: ['language', 'title', 'showLineNumbers', 'highlightLines', 'theme'], example: { type: 'CodeBlock', language: 'sql', title: 'consulta.sql', code: 'SELECT TOP 10 * FROM dbo.Ventas;' } },
+  { name: 'CodeBlock', category: 'technical', description: 'Código SQL/Python/JSON/Bash/YAML resaltado con auto-ajuste al ancho. La numeración se dibuja como vectores, así que copiar del PDF devuelve solo el código.', required: ['code'], optional: ['language', 'title', 'showLineNumbers', 'lineNumberStyle', 'wrap', 'highlightLines', 'theme'], example: { type: 'CodeBlock', language: 'sql', title: 'consulta.sql', code: 'SELECT TOP 10 * FROM dbo.Ventas;' } },
   { name: 'Image', category: 'media', description: 'Imagen PNG/JPEG/WebP/SVG procesada y normalizada.', required: ['src'], optional: ['width', 'height', 'fit', 'caption', 'align'], example: { type: 'Image', src: 'images/logo.png', width: 160, caption: 'Marca corporativa' } },
   { name: 'QRCode', category: 'media', description: 'Código QR rasterizado en alta resolución.', required: ['value'], optional: ['size', 'caption'], example: { type: 'QRCode', value: 'https://example.com', size: 160 } },
   { name: 'SignatureBlock', category: 'data', description: 'Bloques de firma formal no divisibles.', required: ['signers'], optional: [], example: { type: 'SignatureBlock', signers: [{ name: 'Ana Pérez', role: 'Gerente de Operaciones' }] } },
@@ -28,5 +28,6 @@ export const documentFeatures = {
   fixedFooter: { description: 'Pie repetido con texto y número de página.', properties: ['text', 'showPageNumbers', 'showRule', 'height'] },
   themes: ['corporate_blue', 'modern_minimal', 'executive_dark', 'financial_classic', 'technical_docs'],
   fonts: ['Helvetica', 'Times-Roman', 'Courier', 'Inter', 'Roboto'],
-  pageSizes: ['A4', 'LETTER', 'LEGAL']
+  pageSizes: ['A4', 'LETTER', 'LEGAL'],
+  codeExport: { description: 'Exporta el código fuente exacto (sin numeración ni cortes de wrap) como archivo .code.md al lado del PDF y/o adjunto dentro del PDF.', values: ['none', 'sidecar', 'embedded', 'both'] }
 } as const;

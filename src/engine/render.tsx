@@ -7,6 +7,8 @@ import type { Readable } from 'node:stream';
 import QRCode from 'qrcode';
 import { PDFDocument } from 'pdf-lib';
 import { renderHighlightedLine } from './codeHighlighter.js';
+import { CodeGutter } from './codeGutter.js';
+import { CODE_LINE_HEIGHT, codeGutterWidth, computeCodeMetrics, normalizeCodeLines, wrapCodeLine } from './codeMetrics.js';
 import { splitInlineMarkup } from './inlineMarkup.js';
 import { computeFlowchartLayout, flowchartMetrics, type ArrowDirection, type FlowchartKind, type PositionedFlowchartNode, type RoutedFlowchartEdge } from './flowchartLayout.js';
 import { registerOptionalFonts, resolveTheme, type ThemeTokens } from './themeProvider.js';
@@ -165,39 +167,41 @@ function ChartGraphic({ node, width, font }: { node: any; width: number; font: s
   return <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>{elements}</Svg>;
 }
 
-function softWrapCodeLine(line: string, maxCharacters = 98): string[] {
-  if (line.length <= maxCharacters) return [line];
-  const indentation = (line.match(/^[ \t]*/) ?? [''])[0].replace(/\t/g, '    ');
-  const result: string[] = [];
-  let remaining = line;
-  while (remaining.length > maxCharacters) {
-    let breakAt = remaining.lastIndexOf(' ', maxCharacters);
-    if (breakAt < Math.floor(maxCharacters * 0.45)) breakAt = maxCharacters;
-    result.push(remaining.slice(0, breakAt));
-    remaining = `${indentation}  ${remaining.slice(breakAt).trimStart()}`;
-  }
-  result.push(remaining);
-  return result;
+/**
+ * Resolves the visual layout of a code block. The renderer and the pagination heuristic
+ * share it, so both always agree on how many rows a block produces.
+ */
+function codeBlockLayout(node: any, contentWidth: number) {
+  const sourceLines = normalizeCodeLines(String(node.code));
+  const showLineNumbers = node.showLineNumbers !== false;
+  const gutterWidth = showLineNumbers ? codeGutterWidth(sourceLines.length) : 0;
+  // The card adds 5pt of horizontal padding and a 1pt border on both sides.
+  const codeWidth = contentWidth - 12 - gutterWidth;
+  const metrics = computeCodeMetrics(sourceLines, codeWidth, node.wrap === 'soft' ? 'soft' : 'fit');
+  const rows = sourceLines.flatMap((line, index) => wrapCodeLine(line, metrics.columns).map((text, segment) => ({
+    text, lineNumber: index + 1, continuation: segment > 0
+  })));
+  return { showLineNumbers, gutterWidth, metrics, rows };
 }
 
-function renderCodeBlock(node: any, theme: ThemeTokens): React.ReactElement {
+function renderCodeBlock(node: any, theme: ThemeTokens, contentWidth: number): React.ReactElement {
   const dark = node.theme === 'dark';
   const background = dark ? '#1E293B' : '#F6F8FA';
   const foreground = dark ? '#E2E8F0' : '#24292F';
   const lineNumberColor = dark ? '#94A3B8' : '#8C959F';
   const highlighted = new Set<number>(node.highlightLines ?? []);
-  const lines = String(node.code).replace(/\r\n/g, '\n').split('\n');
-  const visualLines = lines.flatMap((line: string, index: number) => softWrapCodeLine(line).map((text, segment) => ({
-    text: text || ' ', lineNumber: index + 1, continuation: segment > 0
-  })));
+  const { showLineNumbers, gutterWidth, metrics, rows } = codeBlockLayout(node, contentWidth);
+  const rowHeight = metrics.fontSize * CODE_LINE_HEIGHT;
   return (
     <View style={{ marginBottom: 12, borderWidth: 1, borderColor: dark ? '#334155' : '#D8DEE4', borderRadius: 4, overflow: 'hidden' }}>
       {node.title ? <View style={{ backgroundColor: dark ? '#0F172A' : '#EAEFF4', paddingHorizontal: 9, paddingVertical: 6 }}><PdfText style={{ fontSize: 8, color: dark ? '#CBD5E1' : '#475569', fontFamily: 'Courier' }}>{node.title}</PdfText></View> : null}
       <View style={{ backgroundColor: background, paddingVertical: 7, paddingHorizontal: 5 }}>
-        {visualLines.map((line, index) => (
-          <View key={index} wrap={false} style={{ flexDirection: 'row', paddingVertical: 1, backgroundColor: highlighted.has(line.lineNumber) ? (dark ? '#334155' : '#FFF3C4') : background }}>
-            {node.showLineNumbers ? <PdfText style={{ width: 28, textAlign: 'right', paddingRight: 7, fontSize: 7.4, color: lineNumberColor, fontFamily: 'Courier' }}>{line.continuation ? '' : line.lineNumber}</PdfText> : null}
-            <PdfText style={{ flexGrow: 1, flexShrink: 1, fontSize: 7.4, lineHeight: 1.35, color: foreground, fontFamily: theme.mono }}>{renderHighlightedLine(line.text, node.language, foreground)}</PdfText>
+        {rows.map((row, index) => (
+          <View key={index} wrap={false} style={{ flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 1, minHeight: rowHeight, backgroundColor: highlighted.has(row.lineNumber) ? (dark ? '#334155' : '#FFF3C4') : background }}>
+            {showLineNumbers ? (node.lineNumberStyle === 'text'
+              ? <PdfText style={{ width: gutterWidth, textAlign: 'right', paddingRight: 7, fontSize: metrics.fontSize, color: lineNumberColor, fontFamily: theme.mono }}>{row.continuation ? '' : row.lineNumber}</PdfText>
+              : <CodeGutter lineNumber={row.lineNumber} continuation={row.continuation} width={gutterWidth} fontSize={metrics.fontSize} color={lineNumberColor} />) : null}
+            <PdfText style={{ flexGrow: 1, flexShrink: 1, fontSize: metrics.fontSize, lineHeight: CODE_LINE_HEIGHT, color: foreground, fontFamily: theme.mono }}>{renderHighlightedLine(row.text, node.language, foreground)}</PdfText>
           </View>
         ))}
       </View>
@@ -411,10 +415,9 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
     case 'CodeBlock': {
       // Keep short code blocks on a single page: a title plus one trailing line at the
       // bottom of a page looks broken. Long blocks still flow across pages line by line.
-      const visualLines = String(n.code).replace(/\r\n/g, '\n').split('\n')
-        .reduce((total: number, line: string) => total + softWrapCodeLine(line).length, 0);
-      const estimated = Math.ceil(visualLines * 12 * 1.15) + (n.title ? 24 : 0) + 28;
-      return <View key={n.id} wrap={estimated > context.contentHeight}>{renderCodeBlock(n, t)}</View>;
+      const layout = codeBlockLayout(n, context.contentWidth);
+      const estimated = Math.ceil(layout.rows.length * layout.metrics.fontSize * CODE_LINE_HEIGHT * 1.15) + (n.title ? 24 : 0) + 28;
+      return <View key={n.id} wrap={estimated > context.contentHeight}>{renderCodeBlock(n, t, context.contentWidth)}</View>;
     }
     case 'Image': {
       const image = context.images.get(n.src);

@@ -122,7 +122,10 @@ El motor debe soportar los siguientes componentes organizados por categoría:
     * `language` (`"sql" | "python" | "json" | "javascript" | "typescript" | "bash" | "yaml" | "text"`, default: `"sql"`): Define el motor de resaltado de sintaxis.
     * `title` (string, opcional): Ej. `"query_extraccion_ventas.sql"` o `"Pipeline ETL"`. Se renderiza como una barra de encabezado superior estilo IDE/terminal.
     * `showLineNumbers` (boolean, default: `true`): Muestra una columna izquierda con el número de línea para facilitar referencias en el texto.
+    * `lineNumberStyle` (`"vector" | "text"`, default: `"vector"`): `"vector"` dibuja los números como trazos vectoriales, de modo que al copiar el bloque desde el PDF solo se obtiene el código. `"text"` mantiene la numeración como texto seleccionable (comportamiento heredado).
+    * `wrap` (`"fit" | "soft"`, default: `"fit"`): `"fit"` reduce la tipografía del bloque (hasta un piso de 5.8pt) antes de partir líneas, lo que evita cortes al pegar; `"soft"` conserva el tamaño base y ajusta el texto al ancho disponible. Las filas de continuación se marcan con una flecha vectorial y nunca añaden indentación artificial al texto copiado.
     * `highlightLines` (number[], opcional): Array de números de línea (ej. `[4, 5, 12]`) que recibirán un fondo resaltado suave para llamar la atención del lector sobre partes críticas de la query.
+  * **Copia exacta:** como el ajuste visual de líneas no se puede representar en la capa de texto de un PDF, `settings.codeExport` permite exportar el fuente literal: `"none"` (default), `"sidecar"` (escribe `<documento>.code.md` junto al PDF), `"embedded"` (lo adjunta dentro del PDF, visible en el panel de adjuntos) o `"both"`. El resultado se devuelve en `codeExports`.
     * `theme` (`"light" | "dark"`, default: `"light"`): `"light"` (estilo GitHub/Clean Docs, ideal para impresión) o `"dark"` (estilo OneDark/Dracula, ideal para lectura en pantalla).
 
 ### 4.5. Medios y Especiales

@@ -25,6 +25,7 @@ El modelo debe producir un documento correcto a partir de datos y requisitos, no
 - Usar `Chart` para series numéricas y no dibujar barras con primitivas `View`.
 - Usar `Flowchart` para procesos, estados o topologías con relaciones; no simularlas con `Grid` y `View`.
 - Usar `CodeBlock` para SQL, código y configuración; evitar enviar Markdown de código dentro de `Text`.
+- Cuando el lector vaya a copiar el código desde el PDF (por ejemplo, para pegarlo en un IDE), añadir `settings.codeExport: "sidecar"` o `"both"`: el fuente exacto se escribe como `<documento>.code.md` junto al PDF y/o queda adjunto dentro de él. La numeración de línea ya no se copia, pero el ajuste de líneas largas sí puede partir filas.
 - No incluir defaults explícitos. El esquema aplica `A4`, márgenes, paleta y tipografías predeterminados.
 - No duplicar la información en subtítulos, callouts y tablas. Cada dato debe aparecer donde aporte valor.
 - Mantener `filename` estable, descriptivo y sin extensión obligatoria. El servidor añade `.pdf`.

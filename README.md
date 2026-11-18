@@ -240,7 +240,7 @@ Cada `SectionTitle` admite `autoNumber: true` para numerar secuencialmente los t
 ## Paginación y fidelidad
 
 - Las tarjetas KPI, callouts, firmas, imágenes y filas de tabla se mantienen indivisibles (`wrap=false`).
-- `CodeBlock` permite que el contenido de una línea se ajuste al ancho disponible; las líneas se mantienen juntas verticalmente.
+- `CodeBlock` ajusta la tipografía del bloque al ancho disponible y solo envuelve la línea cuando ya no puede reducirse; las líneas se mantienen juntas verticalmente. La numeración se dibuja como geometría vectorial, por lo que copiar el bloque desde el PDF nunca arrastra los números de línea. Para obtener el fuente literal (sin los cortes que impone el ancho de página) usa `settings.codeExport: "sidecar" | "embedded" | "both"`.
 - Los `SectionTitle` usan `minPresenceAhead`, por lo que un título nunca queda huérfano al pie de página.
 - Las tablas que caben en una página se mantienen indivisibles y dibujan su cabecera una sola vez. Solo las tablas que superan el alto de página usan cabecera `fixed`, que React-PDF repite en las páginas de continuación; en ese caso conviene ubicar tablas extensas al final de una sección o insertar un `PageBreak` al terminar la tabla si no deben aparecer en páginas posteriores. Las filas individuales no se parten entre páginas.
 - La cabecera/pie general se repite en todas las páginas y admite paginación `Página n de N`.

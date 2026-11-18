@@ -65,6 +65,10 @@ const codeBlockNode = z.object({
   type: z.literal('CodeBlock'), ...common,
   code: z.string().max(100_000), language: z.enum(['sql', 'python', 'json', 'javascript', 'typescript', 'bash', 'yaml', 'text']).default('sql'),
   title: z.string().max(200).optional(), showLineNumbers: z.boolean().default(true),
+  // 'vector' draws the gutter as SVG paths so it never lands in the copied text.
+  lineNumberStyle: z.enum(['vector', 'text']).default('vector'),
+  // 'fit' shrinks the font (down to a floor) before wrapping, which keeps pasted code closer to the source.
+  wrap: z.enum(['fit', 'soft']).default('fit'),
   highlightLines: z.array(z.number().int().min(1).max(20_000)).max(500).optional(), theme: z.enum(['light', 'dark']).default('light')
 }).strict();
 const imageNode = z.object({ type: z.literal('Image'), ...common, src: z.string().min(1).max(12_000_000), width: z.number().min(10).max(1_000).optional(), height: z.number().min(10).max(1_000).optional(), fit: z.enum(['contain', 'cover', 'width']).default('contain'), caption: z.string().max(300).optional(), align: z.enum(['left', 'center', 'right']).default('center') }).strict();
@@ -107,8 +111,11 @@ export const componentNodeSchema = z.lazy(() => z.discriminatedUnion('type', [
 export const settingsSchema = z.object({
   pageSize: z.enum(['A4', 'LETTER', 'LEGAL']).default('A4'),
   orientation: z.enum(['portrait', 'landscape']).default('portrait'),
+  // Code blocks are rendered without a selectable gutter, but wrapped rows still break the
+  // text layer. This option exports the exact sources so they can be copied verbatim.
+  codeExport: z.enum(['none', 'sidecar', 'embedded', 'both']).default('none'),
   margins: z.object({ top: z.number().min(0).max(150).default(48), bottom: z.number().min(0).max(150).default(48), left: z.number().min(0).max(150).default(48), right: z.number().min(0).max(150).default(48) }).strict().default({ top: 48, bottom: 48, left: 48, right: 48 })
-}).strict().default({ pageSize: 'A4', orientation: 'portrait', margins: { top: 48, bottom: 48, left: 48, right: 48 } });
+}).strict().default({ pageSize: 'A4', orientation: 'portrait', codeExport: 'none', margins: { top: 48, bottom: 48, left: 48, right: 48 } });
 
 export const themeSchema = z.object({
   preset: z.enum(['corporate_blue', 'modern_minimal', 'executive_dark', 'financial_classic', 'technical_docs']).default('corporate_blue'),
