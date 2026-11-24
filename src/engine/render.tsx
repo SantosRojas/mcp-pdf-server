@@ -1,12 +1,12 @@
 import React from 'react';
 import {
-  Document, Page, View, Text as PdfText, Image as PdfImage, Svg, Rect, Line, Path, Circle, Text as SvgText,
+  Document, Page, View, Link, Text as PdfText, Image as PdfImage, Svg, Rect, Line, Path, Circle, Text as SvgText,
   renderToStream
 } from '@react-pdf/renderer';
 import type { Readable } from 'node:stream';
 import QRCode from 'qrcode';
 import { PDFDocument } from 'pdf-lib';
-import { renderHighlightedLine } from './codeHighlighter.js';
+import { renderHighlightSpans, sliceHighlightSpans, tokenizeCodeLines } from './codeHighlighter.js';
 import { CodeGutter } from './codeGutter.js';
 import { CODE_LINE_HEIGHT, codeGutterWidth, computeCodeMetrics, normalizeCodeLines, wrapCodeLine } from './codeMetrics.js';
 import { splitInlineMarkup } from './inlineMarkup.js';
@@ -18,11 +18,58 @@ import type { ComponentNode, GeneratePdfInput } from '../schemas/ast.js';
 import { AppError } from '../utils/errors.js';
 import { config } from '../config.js';
 
+export interface UiStrings {
+  pageOf: (page: number, total: number) => string;
+  subtotal: string;
+  tax: string;
+  discount: string;
+  total: string;
+  missingLogo: string;
+  missingImage: string;
+  missingQr: string;
+}
+
+export function resolveUiStrings(locale = 'es-PE'): UiStrings {
+  const isEn = locale.trim().toLowerCase().startsWith('en');
+  if (isEn) {
+    return {
+      pageOf: (page, total) => `Page ${page} of ${total}`,
+      subtotal: 'Subtotal',
+      tax: 'Tax',
+      discount: 'Discount',
+      total: 'TOTAL',
+      missingLogo: '[Logo unavailable]',
+      missingImage: '[Image unavailable]',
+      missingQr: '[QR unavailable]'
+    };
+  }
+  return {
+    pageOf: (page, total) => `Página ${page} de ${total}`,
+    subtotal: 'Subtotal',
+    tax: 'Impuestos',
+    discount: 'Descuento',
+    total: 'TOTAL',
+    missingLogo: '[Logo no disponible]',
+    missingImage: '[Imagen no disponible]',
+    missingQr: '[QR no disponible]'
+  };
+}
+
+export function resolveChildWidths(parentWidth: number, columns: number, gap: number, weights?: readonly number[]): number[] {
+  const safeCols = Math.max(1, columns);
+  const available = Math.max(60, parentWidth - gap * Math.max(0, safeCols - 1));
+  const resolvedWeights = weights && weights.length === safeCols ? weights : Array<number>(safeCols).fill(1);
+  const totalWeight = resolvedWeights.reduce((sum, item) => sum + item, 0) || safeCols;
+  return resolvedWeights.map((weight) => (available * weight) / totalWeight);
+}
+
 interface RenderContext {
   theme: ThemeTokens;
+  locale: string;
+  ui: UiStrings;
   images: Map<string, Buffer | null>;
   qrCodes: Map<string, Buffer | null>;
-  sectionCounter: number;
+  sectionCounters: [number, number, number];
   contentHeight: number;
   contentWidth: number;
   warnings: string[];
@@ -62,12 +109,13 @@ function compactNumber(value: number): string {
 
 const NO_LIGATURES = { calt: false, liga: false, clig: false, dlig: false, rlig: false };
 
-function textRuns(text: string, mono = 'Courier', parentSize?: number, monoColor = '#334155'): React.ReactNode[] {
+function textRuns(text: string, mono = 'Courier', parentSize?: number, monoColor = '#334155', linkColor = '#2563EB'): React.ReactNode[] {
   return splitInlineMarkup(text).map((run, index) => {
     if (run.kind === 'bold') return <PdfText key={index} style={{ fontWeight: 700 }}>{run.text}</PdfText>;
     // Mono faces have a larger optical size than the text face; 92% keeps the run in rhythm.
     if (run.kind === 'code') return <PdfText key={index} style={{ fontFamily: mono, fontFeatureSettings: NO_LIGATURES, color: monoColor, ...(parentSize ? { fontSize: Math.round(parentSize * 0.92 * 10) / 10 } : {}) }}>{run.text}</PdfText>;
     if (run.kind === 'italic') return <PdfText key={index} style={{ fontStyle: 'italic' }}>{run.text}</PdfText>;
+    if (run.kind === 'link' && run.href) return <Link key={index} src={run.href} style={{ color: linkColor, textDecoration: 'underline' }}>{run.text}</Link>;
     return <PdfText key={index}>{run.text}</PdfText>;
   });
 }
@@ -82,12 +130,20 @@ function formatMoney(value: number, currency: string, locale = 'es-PE'): string 
   catch { return `${currency} ${formatNumber(value, 'es-PE')}`; }
 }
 
-function formatCell(value: unknown, format: string, currency = 'PEN', locale = 'es-PE'): string {
+export function formatCell(value: unknown, format: string, currency = 'PEN', locale = 'es-PE'): string {
   if (value === null || value === undefined) return '-';
   if (format === 'currency' && typeof value === 'number') return formatMoney(value, currency, locale);
   if (format === 'number' && typeof value === 'number') return formatNumber(value, locale);
   if (format === 'percent' && typeof value === 'number') return `${formatNumber(value, locale)}%`;
   if (format === 'date' && typeof value === 'string') {
+    const isoDateOnly = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoDateOnly) {
+      const utcNoon = new Date(Date.UTC(Number(isoDateOnly[1]), Number(isoDateOnly[2]) - 1, Number(isoDateOnly[3]), 12, 0, 0));
+      if (!Number.isNaN(utcNoon.getTime())) {
+        try { return new Intl.DateTimeFormat(locale, { timeZone: 'UTC' }).format(utcNoon); }
+        catch { return new Intl.DateTimeFormat('es-PE', { timeZone: 'UTC' }).format(utcNoon); }
+      }
+    }
     const parsed = new Date(value);
     if (Number.isNaN(parsed.getTime())) return value;
     try { return new Intl.DateTimeFormat(locale).format(parsed); }
@@ -111,21 +167,26 @@ function arcPath(cx: number, cy: number, radius: number, start: number, end: num
   return `M ${x1} ${y1} A ${radius} ${radius} 0 ${large} 1 ${x2} ${y2} L ${ix2} ${iy2} A ${inner} ${inner} 0 ${large} 0 ${ix1} ${iy1} Z`;
 }
 
+function truncateLabel(label: string, maxChars: number): string {
+  if (label.length <= maxChars) return label;
+  return `${label.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+}
+
 function ChartGraphic({ node, width, font, palette }: { node: any; width: number; font: string; palette: string[] }): React.ReactElement {
-  const height = node.chartType === 'pie' || node.chartType === 'doughnut' ? 250 : 230;
   const firstValues: number[] = node.datasets[0]?.data ?? [];
   const allValues: number[] = node.datasets.flatMap((dataset: { data: number[] }) => dataset.data);
   const minValue = Math.min(0, ...allValues);
   const maxValue = Math.max(0, ...allValues);
   const valueRange = Math.max(1, maxValue - minValue);
   const elements: React.ReactNode[] = [];
+  let height = 230;
+
   if (node.chartType === 'pie' || node.chartType === 'doughnut') {
-    // Centre the circle in the actual content width: the previous fixed cx=160 left
-    // the chart hugging the left edge of the page.
+    height = 250;
     const centerX = width / 2;
     const centerY = 122;
-    const radius = Math.min(94, Math.max(56, width * 0.2));
-    const hole = Math.round(radius * 0.51);
+    const radius = Math.min(94, Math.max(48, width * 0.2));
+    const hole = Math.round(radius * 0.52);
     const total = firstValues.reduce((sum: number, value: number) => sum + Math.max(0, value), 0) || 1;
     let cursor = 0;
     firstValues.forEach((value: number, index: number) => {
@@ -138,14 +199,49 @@ function ChartGraphic({ node, width, font, palette }: { node: any; width: number
       }
       cursor += sweep;
     });
+    if (node.chartType === 'doughnut') {
+      elements.push(<SvgText key="doughnut-total" {...svgFlowchartLabel(centerX, centerY + 3.5, 10, '#334155', 700, font)}>{compactNumber(total)}</SvgText>);
+    }
+  } else if (node.chartType === 'horizontalBar') {
+    const rowGap = 24;
+    const seriesCount = Math.max(1, node.datasets.length);
+    const top = 14;
+    const bottom = 28;
+    const chartHeight = Math.max(80, node.labels.length * rowGap);
+    height = top + chartHeight + bottom;
+    const left = Math.min(130, Math.max(72, Math.round(width * 0.28)));
+    const right = 18;
+    const chartWidth = Math.max(80, width - left - right);
+    const xFor = (value: number) => left + ((value - minValue) / valueRange) * chartWidth;
+    const zeroX = xFor(0);
+    const ticks = 4;
+    for (let tick = 0; tick <= ticks; tick += 1) {
+      const value = minValue + (valueRange * tick) / ticks;
+      const x = xFor(value);
+      const isZero = Math.abs(value) < 1e-9;
+      elements.push(<Line key={`hgrid-${tick}`} x1={x} y1={top} x2={x} y2={top + chartHeight} stroke={isZero ? '#CBD5E1' : '#E7ECF2'} strokeWidth={isZero ? 1 : 0.6} />);
+      elements.push(<SvgText key={`hgrid-label-${tick}`} {...svgAxisLabel(x, top + chartHeight + 14, font)}>{compactNumber(value)}</SvgText>);
+    }
+    const maxLabelChars = Math.max(10, Math.floor((left - 10) / 4.3));
+    node.labels.forEach((label: string, index: number) => {
+      const groupTop = top + index * rowGap + rowGap * 0.16;
+      const barBand = (rowGap * 0.68) / seriesCount;
+      elements.push(<SvgText key={`hlabel-${index}`} {...svgValueLabel(left - 6, groupTop + (rowGap * 0.34) + 2.4, font)}>{truncateLabel(label, maxLabelChars)}</SvgText>);
+      node.datasets.forEach((dataset: { data: number[] }, seriesIndex: number) => {
+        const value = dataset.data[index] ?? 0;
+        const xEnd = xFor(value);
+        const barX = Math.min(zeroX, xEnd);
+        const barW = Math.max(1, Math.abs(xEnd - zeroX));
+        elements.push(<Rect key={`hbar-${seriesIndex}-${index}`} x={barX} y={groupTop + seriesIndex * barBand} width={barW} height={Math.max(3, barBand * 0.85)} fill={chartColor(palette, seriesIndex)} rx={2} />);
+      });
+    });
   } else {
     const isBar = node.chartType === 'bar';
     const chartHeight = isBar ? 158 : 160;
     const top = 12;
-    // The left gutter hosts the value axis; the previous version had no y scale at all.
     const left = 44;
     const right = 12;
-    const chartWidth = Math.max(120, width - left - right);
+    const chartWidth = Math.max(90, width - left - right);
     const yFor = (value: number) => top + chartHeight - ((value - minValue) / valueRange) * chartHeight;
     const ticks = 4;
     for (let tick = 0; tick <= ticks; tick += 1) {
@@ -155,6 +251,8 @@ function ChartGraphic({ node, width, font, palette }: { node: any; width: number
       elements.push(<Line key={`grid-${tick}`} x1={left} y1={y} x2={left + chartWidth} y2={y} stroke={isZero ? '#CBD5E1' : '#E7ECF2'} strokeWidth={isZero ? 1 : 0.6} />);
       elements.push(<SvgText key={`grid-label-${tick}`} {...svgValueLabel(left - 7, y + 2.6, font)}>{compactNumber(value)}</SvgText>);
     }
+    const labelStep = Math.max(1, Math.ceil(node.labels.length / Math.max(3, Math.floor(chartWidth / 52))));
+    const maxChars = Math.max(6, Math.min(18, Math.floor(((chartWidth / Math.max(1, node.labels.length)) * labelStep) / 4.4)));
     if (isBar) {
       const groupWidth = chartWidth / Math.max(1, node.labels.length);
       const seriesCount = Math.max(1, node.datasets.length);
@@ -168,7 +266,9 @@ function ChartGraphic({ node, width, font, palette }: { node: any; width: number
           const x = left + index * groupWidth + groupWidth * 0.14 + seriesIndex * innerWidth;
           elements.push(<Rect key={`bar-${seriesIndex}-${index}`} x={x} y={y} width={innerWidth * 0.88} height={barHeight} fill={chartColor(palette, seriesIndex)} rx={2} />);
         });
-        elements.push(<SvgText key={`label-${index}`} {...svgAxisLabel(left + index * groupWidth + groupWidth / 2, top + chartHeight + 18, font)}>{label.slice(0, 14)}</SvgText>);
+        if (index % labelStep === 0 || index === node.labels.length - 1) {
+          elements.push(<SvgText key={`label-${index}`} {...svgAxisLabel(left + index * groupWidth + groupWidth / 2, top + chartHeight + 18, font)}>{truncateLabel(label, maxChars)}</SvgText>);
+        }
       });
     } else {
       node.datasets.forEach((dataset: { data: number[] }, seriesIndex: number) => {
@@ -182,8 +282,10 @@ function ChartGraphic({ node, width, font, palette }: { node: any; width: number
         points.forEach(([x, y]: readonly [number, number], index: number) => elements.push(<Circle key={`point-${seriesIndex}-${index}`} cx={x} cy={y} r={3} fill={seriesColor} />));
       });
       node.labels.forEach((label: string, index: number) => {
-        const x = left + (node.labels.length <= 1 ? chartWidth / 2 : (index / (node.labels.length - 1)) * chartWidth);
-        elements.push(<SvgText key={`xlabel-${index}`} {...svgAxisLabel(x, top + chartHeight + 18, font)}>{label.slice(0, 14)}</SvgText>);
+        if (index % labelStep === 0 || index === node.labels.length - 1) {
+          const x = left + (node.labels.length <= 1 ? chartWidth / 2 : (index / (node.labels.length - 1)) * chartWidth);
+          elements.push(<SvgText key={`xlabel-${index}`} {...svgAxisLabel(x, top + chartHeight + 18, font)}>{truncateLabel(label, maxChars)}</SvgText>);
+        }
       });
     }
   }
@@ -201,10 +303,16 @@ function codeBlockLayout(node: any, contentWidth: number) {
   // The card adds 5pt of horizontal padding and a 1pt border on both sides.
   const codeWidth = contentWidth - 12 - gutterWidth;
   const metrics = computeCodeMetrics(sourceLines, codeWidth, node.wrap === 'soft' ? 'soft' : 'fit');
-  const rows = sourceLines.flatMap((line, index) => wrapCodeLine(line, metrics.columns).map((text, segment) => ({
-    text, lineNumber: index + 1, continuation: segment > 0
-  })));
-  return { showLineNumbers, gutterWidth, metrics, rows };
+  const rows = sourceLines.flatMap((line, index) => {
+    const segments = wrapCodeLine(line, metrics.columns);
+    let offset = 0;
+    return segments.map((text, segment) => {
+      const start = offset;
+      offset += text.length;
+      return { text, lineIndex: index, lineNumber: index + 1, continuation: segment > 0, start, length: text.length };
+    });
+  });
+  return { sourceLines, showLineNumbers, gutterWidth, metrics, rows };
 }
 
 function renderCodeBlock(node: any, theme: ThemeTokens, contentWidth: number): React.ReactElement {
@@ -213,7 +321,8 @@ function renderCodeBlock(node: any, theme: ThemeTokens, contentWidth: number): R
   const foreground = dark ? '#E2E8F0' : '#24292F';
   const lineNumberColor = dark ? '#94A3B8' : '#8C959F';
   const highlighted = new Set<number>(node.highlightLines ?? []);
-  const { showLineNumbers, gutterWidth, metrics, rows } = codeBlockLayout(node, contentWidth);
+  const { sourceLines, showLineNumbers, gutterWidth, metrics, rows } = codeBlockLayout(node, contentWidth);
+  const tokenizedLines = tokenizeCodeLines(sourceLines.join('\n'), node.language, foreground, dark);
   const rowHeight = metrics.fontSize * CODE_LINE_HEIGHT;
   return (
     <View style={{ marginBottom: SPACE.lg, borderWidth: 1, borderColor: dark ? '#334155' : '#D8DEE4', borderRadius: RADIUS.md, overflow: 'hidden' }}>
@@ -223,14 +332,18 @@ function renderCodeBlock(node: any, theme: ThemeTokens, contentWidth: number): R
         </View>
       ) : null}
       <View style={{ backgroundColor: background, paddingVertical: 7, paddingHorizontal: 5 }}>
-        {rows.map((row, index) => (
-          <View key={index} wrap={false} style={{ flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 1, minHeight: rowHeight, backgroundColor: highlighted.has(row.lineNumber) ? (dark ? '#334155' : '#FFF3C4') : background }}>
-            {showLineNumbers ? (node.lineNumberStyle === 'text'
-              ? <PdfText style={{ width: gutterWidth, textAlign: 'right', paddingRight: 7, fontSize: metrics.fontSize, color: lineNumberColor, fontFamily: theme.mono, fontFeatureSettings: NO_LIGATURES }}>{row.continuation ? '' : row.lineNumber}</PdfText>
-              : <CodeGutter lineNumber={row.lineNumber} continuation={row.continuation} width={gutterWidth} fontSize={metrics.fontSize} color={lineNumberColor} />) : null}
-            <PdfText style={{ flexGrow: 1, flexShrink: 1, fontSize: metrics.fontSize, lineHeight: CODE_LINE_HEIGHT, color: foreground, fontFamily: theme.mono, fontFeatureSettings: NO_LIGATURES }}>{renderHighlightedLine(row.text, node.language, foreground, dark)}</PdfText>
-          </View>
-        ))}
+        {rows.map((row, index) => {
+          const lineTokens = tokenizedLines[row.lineIndex] ?? [];
+          const rowTokens = sliceHighlightSpans(lineTokens, row.start, row.length);
+          return (
+            <View key={index} wrap={false} style={{ flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 1, minHeight: rowHeight, backgroundColor: highlighted.has(row.lineNumber) ? (dark ? '#334155' : '#FFF3C4') : background }}>
+              {showLineNumbers ? (node.lineNumberStyle === 'text'
+                ? <PdfText style={{ width: gutterWidth, textAlign: 'right', paddingRight: 7, fontSize: metrics.fontSize, color: lineNumberColor, fontFamily: theme.mono, fontFeatureSettings: NO_LIGATURES }}>{row.continuation ? '' : row.lineNumber}</PdfText>
+                : <CodeGutter lineNumber={row.lineNumber} continuation={row.continuation} width={gutterWidth} fontSize={metrics.fontSize} color={lineNumberColor} />) : null}
+              <PdfText style={{ flexGrow: 1, flexShrink: 1, fontSize: metrics.fontSize, lineHeight: CODE_LINE_HEIGHT, color: foreground, fontFamily: theme.mono, fontFeatureSettings: NO_LIGATURES }}>{renderHighlightSpans(rowTokens, row.text)}</PdfText>
+            </View>
+          );
+        })}
       </View>
     </View>
   );
@@ -343,19 +456,51 @@ function FlowchartGraphic({ node, context }: { node: any; context: RenderContext
   );
 }
 
+function nextSectionNumber(counters: [number, number, number], level: number): string {
+  if (level <= 1) {
+    counters[0] += 1;
+    counters[1] = 0;
+    counters[2] = 0;
+    return String(counters[0]);
+  }
+  if (level === 2) {
+    if (counters[0] === 0) counters[0] = 1;
+    counters[1] += 1;
+    counters[2] = 0;
+    return `${counters[0]}.${counters[1]}`;
+  }
+  if (counters[0] === 0) counters[0] = 1;
+  if (counters[1] === 0) counters[1] = 1;
+  counters[2] += 1;
+  return `${counters[0]}.${counters[1]}.${counters[2]}`;
+}
+
+function estimateWrappedLines(text: string, widthPt: number, fontSize: number): number {
+  const charsPerLine = Math.max(20, Math.floor(widthPt / (fontSize * 0.52)));
+  return text.split(/\r?\n/).reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
+}
+
 function renderNode(node: ComponentNode, context: RenderContext): React.ReactNode {
   const n = node as any;
   const t = context.theme;
   switch (n.type) {
     case 'PageBreak': return <View key={n.id} break />;
-    case 'View': return <View key={n.id} wrap={n.wrap} style={{ flexDirection: n.direction, gap: n.gap, padding: n.padding, margin: n.margin, backgroundColor: n.backgroundColor, borderColor: n.borderColor, borderWidth: n.borderWidth, borderRadius: n.borderRadius, alignItems: n.align, justifyContent: n.justify }}>{n.children.map((child: ComponentNode, i: number) => <React.Fragment key={i}>{renderNode(child, context)}</React.Fragment>)}</View>;
+    case 'View': {
+      const horizontalInset = (n.padding ?? 0) * 2 + (n.borderWidth ?? 0) * 2 + (n.margin ?? 0) * 2;
+      const childContext: RenderContext = horizontalInset > 0
+        ? { ...context, contentWidth: Math.max(60, context.contentWidth - horizontalInset) }
+        : context;
+      return <View key={n.id} wrap={n.wrap} style={{ flexDirection: n.direction, gap: n.gap, padding: n.padding, margin: n.margin, backgroundColor: n.backgroundColor, borderColor: n.borderColor, borderWidth: n.borderWidth, borderRadius: n.borderRadius, alignItems: n.align, justifyContent: n.justify }}>{n.children.map((child: ComponentNode, i: number) => <React.Fragment key={i}>{renderNode(child, childContext)}</React.Fragment>)}</View>;
+    }
     case 'Grid': {
+      const colWidths = resolveChildWidths(context.contentWidth, n.columns, n.gap, n.weights);
+      const weights: number[] = n.weights && n.weights.length === n.columns ? n.weights : Array<number>(n.columns).fill(1);
       const rows: ComponentNode[][] = [];
       for (let i = 0; i < n.children.length; i += n.columns) rows.push(n.children.slice(i, i + n.columns));
       return <View key={n.id} style={{ gap: n.gap }}>
         {rows.map((row: ComponentNode[], rowIndex: number) => <View key={rowIndex} wrap={false} style={{ flexDirection: 'row', gap: n.gap }}>
-          {row.map((child: ComponentNode, i: number) => <View key={i} style={{ flexGrow: 1, flexBasis: 0, minWidth: 0 }}>{renderNode(child, context)}</View>)}
-          {row.length < n.columns ? Array.from({ length: n.columns - row.length }).map((_, i) => <View key={`empty-${i}`} style={{ flexGrow: 1, flexBasis: 0, minWidth: 0 }} />) : null}
+          {row.map((child: ComponentNode, i: number) => <View key={i} style={{ flexGrow: weights[i] ?? 1, flexBasis: 0, minWidth: 0 }}>{renderNode(child, { ...context, contentWidth: Math.max(60, colWidths[i] ?? context.contentWidth / n.columns) })}</View>)}
+          {row.length < n.columns ? Array.from({ length: n.columns - row.length }).map((_, i) => <View key={`empty-${i}`} style={{ flexGrow: weights[row.length + i] ?? 1, flexBasis: 0, minWidth: 0 }} />) : null}
         </View>)}
       </View>;
     }
@@ -370,7 +515,7 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
             {logo ? <PdfImage src={logo} style={{ width: 48, height: 48, objectFit: 'contain' }} /> : null}
             <View style={{ flexGrow: 1 }}>
               <PdfText style={{ fontSize: TYPE.display, fontWeight: 700, color: t.primary, fontFamily: t.heading, textAlign: n.alignment, letterSpacing: TRACKING.display, lineHeight: LINE_HEIGHT.tight }}>{n.title}</PdfText>
-              {n.subtitle ? <PdfText style={{ fontSize: TYPE.small, color: t.muted, marginTop: 3, textAlign: n.alignment, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{n.subtitle}</PdfText> : null}
+              {n.subtitle ? <PdfText style={{ fontSize: TYPE.small, color: t.muted, marginTop: 3, textAlign: n.alignment, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{textRuns(n.subtitle, t.mono, TYPE.small, t.primary, t.accent)}</PdfText> : null}
             </View>
           </View>
           {n.badgeText ? <View style={{ backgroundColor: t.surface, borderWidth: 0.5, borderColor: t.border, paddingHorizontal: 8, paddingVertical: 5, borderRadius: RADIUS.pill }}><PdfText style={{ color: t.primary, fontSize: TYPE.micro, fontWeight: 700, letterSpacing: TRACKING.wide, fontFamily: t.heading }}>{n.badgeText}</PdfText></View> : null}
@@ -378,11 +523,11 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
         <View style={{ marginTop: SPACE.md, borderBottomWidth: 1, borderBottomColor: t.border }}>
           <View style={{ width: 64, height: 2.5, backgroundColor: t.accent, borderRadius: RADIUS.sm }} />
         </View>
-        {n.logoUrl && !logo ? <PdfText style={{ fontSize: TYPE.tiny, color: t.muted, marginTop: 2 }}>[Logo no disponible]</PdfText> : null}
+        {n.logoUrl && !logo ? <PdfText style={{ fontSize: TYPE.tiny, color: t.muted, marginTop: 2 }}>{context.ui.missingLogo}</PdfText> : null}
       </View>;
     }
     case 'SectionTitle': {
-      const sectionNumber = n.number ?? (n.autoNumber ? ++context.sectionCounter : undefined);
+      const sectionNumber = n.number ?? (n.autoNumber ? nextSectionNumber(context.sectionCounters, n.level ?? 1) : undefined);
       const size = n.level === 1 ? TYPE.h1 : n.level === 2 ? TYPE.h2 : TYPE.h3;
       const weight = n.level === 1 ? 700 : 600;
       return <View key={n.id} wrap={false} minPresenceAhead={120} style={{ marginTop: n.level === 1 ? 14 : 9, marginBottom: 7, borderBottomWidth: n.underline ? 0.75 : 0, borderBottomColor: t.border, paddingBottom: 5 }}>
@@ -392,24 +537,19 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
         </PdfText>
       </View>;
     }
-    case 'Text': return <PdfText key={n.id} style={{ color: n.color ?? t.text, fontSize: n.size, textAlign: n.align, fontWeight: n.weight === 'bold' ? 700 : n.weight === 'semibold' ? 600 : 400, fontStyle: n.italic ? 'italic' : 'normal', lineHeight: n.lineHeight, marginBottom: n.marginBottom, fontFamily: t.font }}>{textRuns(n.text, t.mono, n.size, t.primary)}</PdfText>;
+    case 'Text': return <PdfText key={n.id} style={{ color: n.color ?? t.text, fontSize: n.size, textAlign: n.align, fontWeight: n.weight === 'bold' ? 700 : n.weight === 'semibold' ? 600 : 400, fontStyle: n.italic ? 'italic' : 'normal', lineHeight: n.lineHeight, marginBottom: n.marginBottom, fontFamily: t.font }}>{textRuns(n.text, t.mono, n.size, t.primary, t.accent)}</PdfText>;
     case 'Callout': {
       const c = t.callouts[(n.variant ?? 'info') as keyof typeof t.callouts] ?? t.callouts.info;
-      return <View key={n.id} wrap={false} style={{ backgroundColor: c.background, borderLeftWidth: 3, borderLeftColor: c.border, padding: SPACE.lg, marginVertical: SPACE.sm, borderRadius: RADIUS.md }}>
+      const approxHeight = estimateWrappedLines(String(n.content), context.contentWidth - SPACE.lg * 2, TYPE.small) * (TYPE.small * LINE_HEIGHT.relaxed) + (n.title ? 20 : 0) + SPACE.lg * 2;
+      const shouldWrap = approxHeight > context.contentHeight * 0.65;
+      return <View key={n.id} wrap={shouldWrap} style={{ backgroundColor: c.background, borderLeftWidth: 3, borderLeftColor: c.border, padding: SPACE.lg, marginVertical: SPACE.sm, borderRadius: RADIUS.md }}>
         {n.title ? <PdfText style={{ fontSize: TYPE.small, color: c.foreground, fontWeight: 600, marginBottom: SPACE.xs, letterSpacing: TRACKING.wide, fontFamily: t.heading }}>{n.icon ? `${n.icon} ` : ''}{n.title}</PdfText> : null}
-        <PdfText style={{ fontSize: TYPE.small, color: c.foreground, lineHeight: LINE_HEIGHT.relaxed, fontFamily: t.font }}>{textRuns(n.content, t.mono, TYPE.small, t.primary)}</PdfText>
+        <PdfText style={{ fontSize: TYPE.small, color: c.foreground, lineHeight: LINE_HEIGHT.relaxed, fontFamily: t.font }}>{textRuns(n.content, t.mono, TYPE.small, t.primary, t.accent)}</PdfText>
       </View>;
     }
     case 'DataTable': {
       const totalWidth = n.columns.reduce((sum: number, col: any) => sum + (col.width ?? (100 / n.columns.length)), 0);
       const widths = n.columns.map((col: any) => `${(col.width ?? (100 / n.columns.length)) / totalWidth * 100}%`);
-      // A `fixed` header is repeated by react-pdf on every page, but if the table starts at
-      // the bottom of a page it leaves an orphan header behind. Tables that fit on one page
-      // are therefore kept indivisible with a normal header; only long tables use a fixed
-      // header so it repeats on continuation pages. The estimate assumes two text lines per
-      // row to stay conservative and never mark as indivisible a table that could overflow.
-      // Reference tables (>12 rows) always flow: keeping them whole pushes a huge blank
-      // band to the end of the previous page when only part of the page is left.
       const rowHeight = (n.compact ? 3 : 6) * 2 + 8 * 1.25 * 2;
       const estimatedHeight = (n.compact ? 5 : 7) * 2 + TYPE.caption + (n.caption ? 14 : 0) + 16 + n.rows.length * rowHeight;
       const fitsOnOnePage = n.rows.length <= 12 && estimatedHeight <= context.contentHeight;
@@ -420,11 +560,19 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
         {n.caption ? <PdfText style={{ color: t.muted, fontSize: TYPE.caption, marginBottom: SPACE.xs + 1, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{n.caption}</PdfText> : null}
         {header}
         {n.rows.map((row: Record<string, unknown>, rowIndex: number) => <View key={rowIndex} wrap={false} style={{ flexDirection: 'row', paddingVertical: n.compact ? 3 : 6, paddingHorizontal: 6, backgroundColor: n.zebra && rowIndex % 2 === 1 ? t.surface : '#FFFFFF', borderBottomWidth: 0.5, borderBottomColor: t.border }}>
-          {n.columns.map((column: any, index: number) => <PdfText key={column.key} style={{ width: widths[index], color: t.text, fontSize: n.compact ? 7 : 8, textAlign: column.align, lineHeight: 1.25, paddingRight: 6, fontFamily: t.font }}>{formatCell(row[column.key], column.format, n.currency, n.locale)}</PdfText>)}
+          {n.columns.map((column: any, index: number) => {
+            const rawVal = row[column.key];
+            const cellSize = n.compact ? 7 : 8;
+            const formatted = formatCell(rawVal, column.format, n.currency, n.locale);
+            const contentNode = column.format === 'text' && typeof rawVal === 'string'
+              ? textRuns(formatted, t.mono, cellSize, t.primary, t.accent)
+              : formatted;
+            return <PdfText key={column.key} style={{ width: widths[index], color: t.text, fontSize: cellSize, textAlign: column.align, lineHeight: 1.25, paddingRight: 6, fontFamily: t.font }}>{contentNode}</PdfText>;
+          })}
         </View>)}
       </View>;
     }
-    case 'KeyValueList': return <View key={n.id} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.md, marginVertical: SPACE.sm }}>{n.items.map((item: any, index: number) => <View key={index} wrap={false} style={{ width: n.columns === 1 ? '100%' : '48%', paddingVertical: 5, borderBottomWidth: 0.5, borderBottomColor: t.border }}><PdfText style={{ fontSize: TYPE.micro, color: t.muted, marginBottom: 2, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{item.key}</PdfText><PdfText style={{ fontSize: TYPE.small, color: t.text, fontWeight: 600, fontFamily: t.heading }}>{String(item.value ?? '-')}</PdfText></View>)}</View>;
+    case 'KeyValueList': return <View key={n.id} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.md, marginVertical: SPACE.sm }}>{n.items.map((item: any, index: number) => <View key={index} wrap={false} style={{ width: n.columns === 1 ? '100%' : '48%', paddingVertical: 5, borderBottomWidth: 0.5, borderBottomColor: t.border }}><PdfText style={{ fontSize: TYPE.micro, color: t.muted, marginBottom: 2, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{item.key}</PdfText><PdfText style={{ fontSize: TYPE.small, color: t.text, fontWeight: 600, fontFamily: t.heading }}>{typeof item.value === 'string' ? textRuns(item.value, t.mono, TYPE.small, t.primary, t.accent) : String(item.value ?? '-')}</PdfText></View>)}</View>;
     case 'MetricCard': {
       const value = String(n.value ?? '-');
       const trendColor = n.trendColor ?? '#0F8A5F';
@@ -435,14 +583,23 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
         {n.description ? <PdfText style={{ color: t.muted, fontSize: TYPE.tiny, marginTop: SPACE.xs, lineHeight: LINE_HEIGHT.normal, fontFamily: t.font }}>{n.description}</PdfText> : null}
       </View>;
     }
-    case 'Chart': return <View key={n.id} wrap={false} style={{ marginVertical: SPACE.md }}>
-      {n.title ? <PdfText style={{ color: t.primary, fontSize: TYPE.small + 1, fontWeight: 600, textAlign: 'center', marginBottom: SPACE.sm, letterSpacing: TRACKING.heading, fontFamily: t.heading }}>{n.title}</PdfText> : null}
-      <ChartGraphic node={n} width={context.contentWidth} font={t.font} palette={t.chart} />
-      {n.showLegend ? <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: SPACE.lg, marginTop: SPACE.xs }}>{(n.chartType === 'pie' || n.chartType === 'doughnut' ? n.labels.map((label: string) => ({ label })) : n.datasets.map((dataset: any) => ({ label: dataset.label }))).map((entry: { label: string }, index: number) => <View key={index} style={{ flexDirection: 'row', alignItems: 'center', gap: SPACE.xs }}><View style={{ width: 8, height: 8, borderRadius: RADIUS.sm, backgroundColor: chartColor(t.chart, index) }} /><PdfText style={{ fontSize: TYPE.micro, color: t.muted, fontFamily: t.font }}>{entry.label}</PdfText></View>)}</View> : null}
-    </View>;
+    case 'Chart': {
+      const isRadial = n.chartType === 'pie' || n.chartType === 'doughnut';
+      const firstData: number[] = n.datasets[0]?.data ?? [];
+      const radialTotal = isRadial ? (firstData.reduce((sum: number, val: number) => sum + Math.max(0, val), 0) || 1) : 1;
+      const legendItems = isRadial
+        ? n.labels.map((label: string, idx: number) => {
+            const pct = Math.round((Math.max(0, firstData[idx] ?? 0) / radialTotal) * 100);
+            return { label: `${label} (${pct}%)` };
+          })
+        : n.datasets.map((dataset: any) => ({ label: dataset.label }));
+      return <View key={n.id} wrap={false} style={{ marginVertical: SPACE.md }}>
+        {n.title ? <PdfText style={{ color: t.primary, fontSize: TYPE.small + 1, fontWeight: 600, textAlign: 'center', marginBottom: SPACE.sm, letterSpacing: TRACKING.heading, fontFamily: t.heading }}>{n.title}</PdfText> : null}
+        <ChartGraphic node={n} width={context.contentWidth} font={t.font} palette={t.chart} />
+        {n.showLegend ? <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: SPACE.lg, marginTop: SPACE.xs }}>{legendItems.map((entry: { label: string }, index: number) => <View key={index} style={{ flexDirection: 'row', alignItems: 'center', gap: SPACE.xs }}><View style={{ width: 8, height: 8, borderRadius: RADIUS.sm, backgroundColor: chartColor(t.chart, index) }} /><PdfText style={{ fontSize: TYPE.micro, color: t.muted, fontFamily: t.font }}>{entry.label}</PdfText></View>)}</View> : null}
+      </View>;
+    }
     case 'CodeBlock': {
-      // Keep short code blocks on a single page: a title plus one trailing line at the
-      // bottom of a page looks broken. Long blocks still flow across pages line by line.
       const layout = codeBlockLayout(n, context.contentWidth);
       const estimated = Math.ceil(layout.rows.length * layout.metrics.fontSize * CODE_LINE_HEIGHT * 1.15) + (n.title ? 24 : 0) + 28;
       return <View key={n.id} wrap={estimated > context.contentHeight}>{renderCodeBlock(n, t, context.contentWidth)}</View>;
@@ -450,14 +607,14 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
     case 'Image': {
       const image = context.images.get(n.src);
       return <View key={n.id} wrap={false} style={{ alignItems: n.align === 'left' ? 'flex-start' : n.align === 'right' ? 'flex-end' : 'center', marginVertical: SPACE.sm }}>
-        {image ? <PdfImage src={image} style={{ width: n.width ?? 420, maxWidth: '100%', height: n.height, objectFit: n.fit === 'width' ? 'contain' : n.fit }} /> : <PdfText style={{ color: t.muted, fontSize: TYPE.micro, padding: SPACE.lg, borderWidth: 0.5, borderColor: t.border }}>[Imagen no disponible]</PdfText>}
+        {image ? <PdfImage src={image} style={{ width: n.width ?? 420, maxWidth: '100%', height: n.height, objectFit: n.fit === 'width' ? 'contain' : n.fit }} /> : <PdfText style={{ color: t.muted, fontSize: TYPE.micro, padding: SPACE.lg, borderWidth: 0.5, borderColor: t.border }}>{context.ui.missingImage}</PdfText>}
         {n.caption ? <PdfText style={{ color: t.muted, fontSize: TYPE.micro, marginTop: SPACE.xs, width: '100%', textAlign: n.align, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{n.caption}</PdfText> : null}
       </View>;
     }
     case 'QRCode': {
       const qr = context.qrCodes.get(n.value);
       return <View key={n.id} wrap={false} style={{ alignItems: 'center', marginVertical: SPACE.md }}>
-        {qr ? <PdfImage src={qr} style={{ width: n.size, height: n.size, maxWidth: '100%', maxHeight: '100%' }} /> : <PdfText style={{ color: t.muted, fontSize: TYPE.micro, padding: SPACE.md, borderWidth: 0.5, borderColor: t.border }}>[QR no disponible]</PdfText>}
+        {qr ? <PdfImage src={qr} style={{ width: n.size, height: n.size, maxWidth: '100%', maxHeight: '100%' }} /> : <PdfText style={{ color: t.muted, fontSize: TYPE.micro, padding: SPACE.md, borderWidth: 0.5, borderColor: t.border }}>{context.ui.missingQr}</PdfText>}
         {n.caption ? <PdfText style={{ color: t.muted, fontSize: TYPE.micro, marginTop: SPACE.xs, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{n.caption}</PdfText> : null}
       </View>;
     }
@@ -470,13 +627,17 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
       </View>)}
     </View>;
     case 'InvoiceSummary': return <View key={n.id} wrap={false} style={{ alignSelf: 'flex-end', width: '58%', backgroundColor: t.surface, padding: SPACE.lg, borderRadius: RADIUS.md, marginVertical: SPACE.md }}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}><PdfText style={{ fontSize: TYPE.caption, color: t.muted, letterSpacing: TRACKING.wide, fontFamily: t.font }}>Subtotal</PdfText><PdfText style={{ fontSize: TYPE.caption + 0.5, color: t.text, fontFamily: t.font }}>{formatMoney(n.subtotal, n.currency, n.locale)}</PdfText></View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}><PdfText style={{ fontSize: TYPE.caption, color: t.muted, letterSpacing: TRACKING.wide, fontFamily: t.font }}>Impuestos</PdfText><PdfText style={{ fontSize: TYPE.caption + 0.5, color: t.text, fontFamily: t.font }}>{formatMoney(n.tax, n.currency, n.locale)}</PdfText></View>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}><PdfText style={{ fontSize: TYPE.caption, color: t.muted, letterSpacing: TRACKING.wide, fontFamily: t.font }}>Descuento</PdfText><PdfText style={{ fontSize: TYPE.caption + 0.5, color: t.text, fontFamily: t.font }}>-{formatMoney(n.discount, n.currency, n.locale)}</PdfText></View>
-      <View style={{ borderTopWidth: 1, borderTopColor: t.border, paddingTop: SPACE.sm, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}><PdfText style={{ fontSize: TYPE.small, color: t.primary, fontWeight: 700, letterSpacing: TRACKING.caps, fontFamily: t.heading }}>TOTAL</PdfText><PdfText style={{ fontSize: TYPE.h2, color: t.primary, fontWeight: 700, fontFamily: t.heading }}>{formatMoney(n.total, n.currency, n.locale)}</PdfText></View>
-      {n.notes ? <PdfText style={{ fontSize: TYPE.tiny, color: t.muted, marginTop: SPACE.sm, fontFamily: t.font }}>{n.notes}</PdfText> : null}
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}><PdfText style={{ fontSize: TYPE.caption, color: t.muted, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{context.ui.subtotal}</PdfText><PdfText style={{ fontSize: TYPE.caption + 0.5, color: t.text, fontFamily: t.font }}>{formatMoney(n.subtotal, n.currency, n.locale)}</PdfText></View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}><PdfText style={{ fontSize: TYPE.caption, color: t.muted, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{context.ui.tax}</PdfText><PdfText style={{ fontSize: TYPE.caption + 0.5, color: t.text, fontFamily: t.font }}>{formatMoney(n.tax, n.currency, n.locale)}</PdfText></View>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 }}><PdfText style={{ fontSize: TYPE.caption, color: t.muted, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{context.ui.discount}</PdfText><PdfText style={{ fontSize: TYPE.caption + 0.5, color: t.text, fontFamily: t.font }}>-{formatMoney(n.discount, n.currency, n.locale)}</PdfText></View>
+      <View style={{ borderTopWidth: 1, borderTopColor: t.border, paddingTop: SPACE.sm, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}><PdfText style={{ fontSize: TYPE.small, color: t.primary, fontWeight: 700, letterSpacing: TRACKING.caps, fontFamily: t.heading }}>{context.ui.total}</PdfText><PdfText style={{ fontSize: TYPE.h2, color: t.primary, fontWeight: 700, fontFamily: t.heading }}>{formatMoney(n.total, n.currency, n.locale)}</PdfText></View>
+      {n.notes ? <PdfText style={{ fontSize: TYPE.tiny, color: t.muted, marginTop: SPACE.sm, fontFamily: t.font }}>{textRuns(n.notes, t.mono, TYPE.tiny, t.primary, t.accent)}</PdfText> : null}
     </View>;
-    case 'BulletList': return <View key={n.id} style={{ marginVertical: SPACE.sm }}>{n.items.map((item: string, index: number) => <View key={index} wrap={false} style={{ flexDirection: 'row', gap: SPACE.md, marginBottom: SPACE.xs + 1 }}><PdfText style={{ color: t.accent, fontSize: TYPE.small + 0.5, minWidth: 12, fontFamily: t.font }}>{n.ordered ? `${index + 1}.` : '•'}</PdfText><PdfText style={{ color: t.text, fontSize: TYPE.small + 0.5, flexGrow: 1, lineHeight: LINE_HEIGHT.relaxed, fontFamily: t.font }}>{textRuns(item, t.mono, TYPE.small + 0.5, t.primary)}</PdfText></View>)}</View>;
+    case 'BulletList': return <View key={n.id} style={{ marginVertical: SPACE.sm }}>{n.items.map((item: string, index: number) => {
+      const itemLines = estimateWrappedLines(item, context.contentWidth - 20, TYPE.small + 0.5);
+      const wrapItem = itemLines * ((TYPE.small + 0.5) * LINE_HEIGHT.relaxed) > context.contentHeight * 0.65;
+      return <View key={index} wrap={wrapItem} style={{ flexDirection: 'row', gap: SPACE.md, marginBottom: SPACE.xs + 1 }}><PdfText style={{ color: t.accent, fontSize: TYPE.small + 0.5, minWidth: 12, fontFamily: t.font }}>{n.ordered ? `${index + 1}.` : '•'}</PdfText><PdfText style={{ color: t.text, fontSize: TYPE.small + 0.5, flexGrow: 1, lineHeight: LINE_HEIGHT.relaxed, fontFamily: t.font }}>{textRuns(item, t.mono, TYPE.small + 0.5, t.primary, t.accent)}</PdfText></View>;
+    })}</View>;
     case 'Flowchart': return <View key={n.id} wrap={false} style={{ marginVertical: SPACE.md }}>
       {n.title ? <PdfText style={{ fontSize: TYPE.small + 0.5, fontWeight: 600, color: t.primary, marginBottom: SPACE.sm, textAlign: n.titleAlign, letterSpacing: TRACKING.heading, fontFamily: t.heading }}>{n.title}</PdfText> : null}
       <View style={{ alignItems: 'center' }}><FlowchartGraphic node={n} context={context} /></View>
@@ -528,11 +689,10 @@ export async function renderPdf(input: GeneratePdfInput, options?: RenderOptions
   const { theme, warnings: fontWarnings } = resolveTheme(input.theme);
   const [{ images, warnings }, { codes: qrCodes, warnings: qrWarnings }] = await Promise.all([prepareImages(input.content), prepareQrCodes(input.content)]);
   warnings.push(...fontWarnings, ...qrWarnings);
-  const context: RenderContext = { theme, images, qrCodes, sectionCounter: 0, contentHeight: 0, contentWidth: 0, warnings };
+  const docLocale = input.settings.locale ?? 'es-PE';
+  const ui = resolveUiStrings(docLocale);
+  const context: RenderContext = { theme, locale: docLocale, ui, images, qrCodes, sectionCounters: [0, 0, 0], contentHeight: 0, contentWidth: 0, warnings };
   const pageMargins = input.settings.margins;
-  // The fixed header/footer live inside the page margins. Adding the full chrome height
-  // to the margin (the previous behaviour) counted the same space twice and left a large
-  // blank band between the header rule and the first line of every page.
   const chromeOffset = 18;
   const chromeGap = 12;
   const paddingTop = input.fixedHeader
@@ -557,12 +717,42 @@ export async function renderPdf(input: GeneratePdfInput, options?: RenderOptions
       creator="mcp-pdf-server"
       producer="mcp-pdf-server / @react-pdf/renderer"
     >
-      <Page size={input.settings.pageSize} orientation={input.settings.orientation} style={{ paddingTop, paddingBottom, paddingHorizontal: pageMargins.left, fontFamily: theme.font, fontSize: 9, color: theme.text }}>
-        {input.fixedHeader ? <View fixed style={{ position: 'absolute', top: chromeOffset, left: pageMargins.left, right: pageMargins.right, height: input.fixedHeader.height, justifyContent: 'center', borderBottomWidth: input.fixedHeader.showRule ? 0.6 : 0, borderBottomColor: theme.border }}><PdfText style={{ color: theme.muted, fontSize: TYPE.micro, letterSpacing: TRACKING.wide, fontFamily: theme.font }} render={({ pageNumber, totalPages }) => (input.fixedHeader?.text ?? input.metadata?.title ?? input.filename).replaceAll('{{pageNumber}}', String(pageNumber)).replaceAll('{{totalPages}}', String(totalPages))} /></View> : null}
+      <Page size={input.settings.pageSize} orientation={input.settings.orientation} style={{ paddingTop, paddingBottom, paddingLeft: pageMargins.left, paddingRight: pageMargins.right, fontFamily: theme.font, fontSize: 9, color: theme.text }}>
+        {input.fixedHeader ? (
+          <View fixed style={{ position: 'absolute', top: chromeOffset, left: pageMargins.left, right: pageMargins.right, height: input.fixedHeader.height, justifyContent: 'center' }}>
+            <PdfText
+              style={{ color: theme.muted, fontSize: TYPE.micro, textAlign: input.fixedHeader.align ?? 'left', letterSpacing: TRACKING.wide, fontFamily: theme.font }}
+              render={({ pageNumber, totalPages }) => {
+                if (input.fixedHeader?.skipFirstPage && pageNumber === 1) return '';
+                return (input.fixedHeader?.text ?? input.metadata?.title ?? input.filename)
+                  .replaceAll('{{pageNumber}}', String(pageNumber))
+                  .replaceAll('{{totalPages}}', String(totalPages));
+              }}
+            />
+            {input.fixedHeader.showRule ? (
+              <View render={({ pageNumber }) => (input.fixedHeader?.skipFirstPage && pageNumber === 1 ? null : <View style={{ marginTop: 4, borderBottomWidth: 0.6, borderBottomColor: theme.border }} />)} />
+            ) : null}
+          </View>
+        ) : null}
         {content}
-        {input.fixedFooter ? <View fixed style={{ position: 'absolute', bottom: chromeOffset, left: pageMargins.left, right: pageMargins.right, height: input.fixedFooter.height, justifyContent: 'center', borderTopWidth: input.fixedFooter.showRule ? 0.6 : 0, borderTopColor: theme.border }}>
-          <PdfText style={{ color: theme.muted, fontSize: TYPE.tiny, textAlign: 'center', letterSpacing: TRACKING.wide, fontFamily: theme.font }} render={({ pageNumber, totalPages }) => `${input.fixedFooter?.text ? `${input.fixedFooter.text.replaceAll('{{pageNumber}}', String(pageNumber)).replaceAll('{{totalPages}}', String(totalPages))}   ` : ''}${input.fixedFooter?.showPageNumbers === false ? '' : `Página ${pageNumber} de ${totalPages}`}`} />
-        </View> : null}
+        {input.fixedFooter ? (
+          <View fixed style={{ position: 'absolute', bottom: chromeOffset, left: pageMargins.left, right: pageMargins.right, height: input.fixedFooter.height, justifyContent: 'center' }}>
+            {input.fixedFooter.showRule ? (
+              <View render={({ pageNumber }) => (input.fixedFooter?.skipFirstPage && pageNumber === 1 ? null : <View style={{ marginBottom: 4, borderTopWidth: 0.6, borderTopColor: theme.border }} />)} />
+            ) : null}
+            <PdfText
+              style={{ color: theme.muted, fontSize: TYPE.tiny, textAlign: input.fixedFooter.align ?? 'center', letterSpacing: TRACKING.wide, fontFamily: theme.font }}
+              render={({ pageNumber, totalPages }) => {
+                if (input.fixedFooter?.skipFirstPage && pageNumber === 1) return '';
+                const prefix = input.fixedFooter?.text
+                  ? `${input.fixedFooter.text.replaceAll('{{pageNumber}}', String(pageNumber)).replaceAll('{{totalPages}}', String(totalPages))}   `
+                  : '';
+                const pageLabel = input.fixedFooter?.showPageNumbers === false ? '' : ui.pageOf(pageNumber, totalPages);
+                return `${prefix}${pageLabel}`;
+              }}
+            />
+          </View>
+        ) : null}
       </Page>
     </Document>
   );

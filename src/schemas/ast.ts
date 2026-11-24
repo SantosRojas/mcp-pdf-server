@@ -1,4 +1,4 @@
-﻿import { z } from 'zod';
+import { z } from 'zod';
 
 const safeText = z.string().max(50_000);
 const color = z.string().regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$|^transparent$|^#[0-9a-fA-F]{8}$/);
@@ -25,6 +25,7 @@ const viewNode: z.ZodObject<z.ZodRawShape> = z.object({
 const gridNode: z.ZodObject<z.ZodRawShape> = z.object({
   type: z.literal('Grid'), ...common,
   columns: z.number().int().min(1).max(6).default(2),
+  weights: z.array(z.number().positive().max(100)).min(1).max(6).optional(),
   gap: z.number().min(0).max(60).default(10),
   children: z.array(z.lazy(() => componentNodeSchema)).max(100)
 }).strict();
@@ -56,14 +57,19 @@ const keyValueListNode = z.object({ type: z.literal('KeyValueList'), ...common, 
 const metricCardNode = z.object({ type: z.literal('MetricCard'), ...common, label: z.string().min(1).max(100), value: scalar, trend: z.string().max(30).optional(), trendColor: color.optional(), description: z.string().max(200).optional() }).strict();
 const chartNode = z.object({
   type: z.literal('Chart'), ...common,
-  chartType: z.enum(['bar', 'line', 'pie', 'doughnut']),
+  chartType: z.enum(['bar', 'horizontalBar', 'line', 'pie', 'doughnut']),
   title: z.string().max(200).optional(), labels: z.array(z.string().max(80)).min(1).max(40),
   datasets: z.array(z.object({ label: z.string().max(100), data: z.array(chartValue).min(1).max(40) }).strict()).min(1).max(6),
   showLegend: z.boolean().default(true)
 }).strict();
 const codeBlockNode = z.object({
   type: z.literal('CodeBlock'), ...common,
-  code: z.string().max(100_000), language: z.enum(['sql', 'python', 'json', 'javascript', 'typescript', 'bash', 'yaml', 'text']).default('sql'),
+  code: z.string().max(100_000),
+  language: z.enum([
+    'sql', 'python', 'json', 'javascript', 'typescript', 'bash', 'yaml', 'text',
+    'go', 'rust', 'java', 'csharp', 'cpp', 'c', 'html', 'css', 'xml',
+    'dockerfile', 'graphql', 'markdown', 'php', 'ruby', 'swift', 'kotlin'
+  ]).default('sql'),
   title: z.string().max(200).optional(), showLineNumbers: z.boolean().default(true),
   // 'vector' draws the gutter as SVG paths so it never lands in the copied text.
   lineNumberStyle: z.enum(['vector', 'text']).default('vector'),
@@ -111,11 +117,12 @@ export const componentNodeSchema = z.lazy(() => z.discriminatedUnion('type', [
 export const settingsSchema = z.object({
   pageSize: z.enum(['A4', 'LETTER', 'LEGAL']).default('A4'),
   orientation: z.enum(['portrait', 'landscape']).default('portrait'),
+  locale: z.string().min(2).max(40).default('es-PE'),
   // Code blocks are rendered without a selectable gutter, but wrapped rows still break the
   // text layer. This option exports the exact sources so they can be copied verbatim.
   codeExport: z.enum(['none', 'sidecar', 'embedded', 'both']).default('none'),
   margins: z.object({ top: z.number().min(0).max(150).default(48), bottom: z.number().min(0).max(150).default(48), left: z.number().min(0).max(150).default(48), right: z.number().min(0).max(150).default(48) }).strict().default({ top: 48, bottom: 48, left: 48, right: 48 })
-}).strict().default({ pageSize: 'A4', orientation: 'portrait', codeExport: 'none', margins: { top: 48, bottom: 48, left: 48, right: 48 } });
+}).strict().default({ pageSize: 'A4', orientation: 'portrait', locale: 'es-PE', codeExport: 'none', margins: { top: 48, bottom: 48, left: 48, right: 48 } });
 
 export const themeSchema = z.object({
   preset: z.enum(['corporate_blue', 'modern_minimal', 'executive_dark', 'financial_classic', 'technical_docs']).default('corporate_blue'),
@@ -125,8 +132,8 @@ export const themeSchema = z.object({
   headingFontFamily: z.enum(['Helvetica', 'Times-Roman', 'Courier', 'Inter', 'Roboto']).optional()
 }).strict().default({ preset: 'corporate_blue', fontFamily: 'Inter' });
 
-const fixedHeaderSchema = z.object({ text: z.string().max(200).optional(), showRule: z.boolean().default(true), height: z.number().min(12).max(80).default(28) }).strict().optional();
-const fixedFooterSchema = z.object({ text: z.string().max(200).optional(), showPageNumbers: z.boolean().default(true), showRule: z.boolean().default(true), height: z.number().min(12).max(80).default(28) }).strict().optional();
+const fixedHeaderSchema = z.object({ text: z.string().max(200).optional(), showRule: z.boolean().default(true), height: z.number().min(12).max(80).default(28), skipFirstPage: z.boolean().default(false), align: z.enum(['left', 'center', 'right']).default('left') }).strict().optional();
+const fixedFooterSchema = z.object({ text: z.string().max(200).optional(), showPageNumbers: z.boolean().default(true), showRule: z.boolean().default(true), height: z.number().min(12).max(80).default(28), skipFirstPage: z.boolean().default(false), align: z.enum(['left', 'center', 'right']).default('center') }).strict().optional();
 
 export const generatePdfInputSchema = z.object({
   filename: z.string().min(1).max(120).regex(/^[\p{L}\p{N}][\p{L}\p{N} _.-]*$/u, 'filename solo puede contener letras, números, espacios, puntos, guiones y guiones bajos'),

@@ -13,6 +13,9 @@ let cachedComponentSchema: unknown;
 export function validateSemanticAst(parsed: GeneratePdfInput): { valid: boolean; errors: ValidationIssue[]; warnings: ValidationIssue[] } {
   const errors: ValidationIssue[] = [];
   const warnings: ValidationIssue[] = [];
+  if (typeof parsed.settings?.locale === 'string') {
+    validateLocale(parsed.settings.locale, 'settings.locale', errors);
+  }
   const uniqueImages = new Set<string>();
   const uniqueQrs = new Set<string>();
   const walk = (nodes: unknown[], parent = 'content'): void => {
@@ -20,6 +23,9 @@ export function validateSemanticAst(parsed: GeneratePdfInput): { valid: boolean;
       if (!item || typeof item !== 'object') return;
       const node = item as Record<string, unknown>;
       const current = `${parent}.${index}`;
+      if (node.type === 'Grid' && Array.isArray(node.weights) && typeof node.columns === 'number' && node.weights.length !== node.columns) {
+        errors.push({ path: `${current}.weights`, message: `Grid.weights (${node.weights.length}) debe coincidir con columns (${node.columns}).`, code: 'GRID_WEIGHTS_MISMATCH' });
+      }
       if (node.type === 'DataTable' && typeof node.locale === 'string') validateLocale(node.locale, `${current}.locale`, errors);
       if (node.type === 'DataTable' && typeof node.currency === 'string') validateCurrency(node.currency, `${current}.currency`, errors);
       if (node.type === 'InvoiceSummary') {
