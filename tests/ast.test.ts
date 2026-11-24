@@ -4,7 +4,7 @@ import { generatePdfInputSchema, securityPdfInputSchema, securityPdfToolInputSch
 import { getComponentSchema, validatePdfAst } from '../src/engine/validate.js';
 import { computeFlowchartLayout, cyclicFlowchartEdges, wrapFlowchartText } from '../src/engine/flowchartLayout.js';
 import { splitInlineMarkup } from '../src/engine/inlineMarkup.js';
-import { metricValueSize, mix, readableText, withAlpha } from '../src/engine/design.js';
+import { flowchartPalette, luminance, metricValueSize, mix, readableText, withAlpha } from '../src/engine/design.js';
 import { registerOptionalFonts, resolveTheme } from '../src/engine/themeProvider.js';
 import { buildWorkspace, isPathAllowed } from '../src/runtime/workspace.js';
 import { componentCatalog } from '../src/components/catalog.js';
@@ -277,4 +277,22 @@ test('resolves Inter, headingFontFamily, JetBrainsMono and derived design palett
   assert.match(withAlpha('#2F75B5', 0.12), /^rgba\(/);
   assert.match(mix('#173B67', '#FFFFFF', 0.5), /^#[0-9a-f]{6}$/i);
   assert.ok(metricValueSize('S/ 1,245,800.00 (consolidado)') < metricValueSize('S/ 120'));
+});
+
+test('flowchartPalette uses solid #RRGGBB hex backgrounds with high text contrast across presets and shorthand/bright accents', () => {
+  const cases = [
+    ['#263238', '#00796B', '#263238'],
+    ['#1F2937', '#A78BFA', '#202938'],
+    ['#09F', '#FDE047', '#CBD5E1']
+  ] as const;
+  for (const [primary, accent, text] of cases) {
+    const palette = flowchartPalette(primary, accent, text);
+    for (const [kind, colors] of Object.entries(palette)) {
+      assert.match(colors.background, /^#[0-9a-f]{6}$/i, `${kind} background must be 6-digit hex (SVG fill breaks on rgba)`);
+      assert.match(colors.border, /^#[0-9a-f]{6}$/i, `${kind} border must be 6-digit hex`);
+      assert.match(colors.foreground, /^#[0-9a-f]{6}$/i, `${kind} foreground must be 6-digit hex`);
+      assert.ok(luminance(colors.background) > 0.75, `${kind} background must be light enough for dark text`);
+      assert.ok(luminance(colors.foreground) < 0.2, `${kind} foreground must be dark enough for contrast`);
+    }
+  }
 });

@@ -127,13 +127,34 @@ export function calloutPalette(primary: string, accent: string): Record<'info' |
   };
 }
 
+function solidHex(hex: string, fallback = '#334155'): string {
+  const rgb = parseHex(hex);
+  if (!rgb) return fallback;
+  return `#${toHex(rgb[0])}${toHex(rgb[1])}${toHex(rgb[2])}`;
+}
+
+function darkInk(hex: string, baseWeight: number): string {
+  let candidate = mix(hex, '#000000', baseWeight);
+  let weight = baseWeight;
+  while (luminance(candidate) > 0.16 && weight < 0.85) {
+    weight += 0.1;
+    candidate = mix(hex, '#000000', weight);
+  }
+  return solidHex(candidate, '#1E293B');
+}
+
 export function flowchartPalette(primary: string, accent: string, text: string): Record<string, SemanticColor> {
+  // SVG <Rect>/<Path> in @react-pdf/renderer corrupts rgba(...) fills into invalid PDF RGB operators.
+  // Normalize all fills, strokes, and labels to solid 6-digit #RRGGBB hex with WCAG AA text contrast.
+  const p = solidHex(primary, '#173B67');
+  const a = solidHex(accent, '#2F75B5');
+  const t = darkInk(solidHex(text, '#17212F'), 0);
   return {
-    start: { background: withAlpha(accent, 0.1), border: accent, foreground: mix(accent, '#000000', 0.45) },
-    end: { background: withAlpha(accent, 0.1), border: accent, foreground: mix(accent, '#000000', 0.45) },
-    process: { background: withAlpha(primary, 0.04), border: mix(primary, '#FFFFFF', 0.55), foreground: text },
+    start: { background: mix(a, '#FFFFFF', 0.90), border: a, foreground: darkInk(a, 0.45) },
+    end: { background: mix(a, '#FFFFFF', 0.90), border: a, foreground: darkInk(a, 0.45) },
+    process: { background: mix(p, '#FFFFFF', 0.95), border: mix(p, '#FFFFFF', 0.55), foreground: t },
     decision: { background: '#FFFBEB', border: '#D97706', foreground: '#78350F' },
-    data: { background: withAlpha(accent, 0.07), border: mix(accent, '#FFFFFF', 0.35), foreground: mix(accent, '#000000', 0.5) },
+    data: { background: mix(a, '#FFFFFF', 0.93), border: mix(a, '#FFFFFF', 0.35), foreground: darkInk(a, 0.5) },
     document: { background: '#F5F3FF', border: '#8B5CF6', foreground: '#4C1D95' },
     database: { background: '#ECFDF5', border: '#10B981', foreground: '#064E3B' }
   };
