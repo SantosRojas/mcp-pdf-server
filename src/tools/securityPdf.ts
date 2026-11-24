@@ -5,7 +5,7 @@ import type { SecurityPdfInput } from '../schemas/ast.js';
 import { defaultWorkspace, type WorkspaceInfo } from '../runtime/workspace.js';
 import { atomicWrite, createTempPath, resolveExistingPdf, resolveOutputFile } from '../utils/files.js';
 import { displayPath } from '../utils/paths.js';
-import { runQpdf } from '../utils/qpdf.js';
+import { buildQpdfEncryptArgs, runQpdf } from '../utils/qpdf.js';
 import { AppError } from '../utils/errors.js';
 
 export async function applyPdfSecurity(input: SecurityPdfInput, workspace: WorkspaceInfo = defaultWorkspace()): Promise<Record<string, unknown>> {
@@ -28,17 +28,19 @@ export async function applyPdfSecurity(input: SecurityPdfInput, workspace: Works
     return { success: true, path: targetPath, relativePath, filename: path.basename(targetPath), encrypted: false, metadataUpdated: Boolean(input.metadata) };
   }
 
-  // qpdf receives passwords as process arguments. Run this service with a dedicated OS account.
+  // Passwords and flags are streamed to qpdf via `@-` stdin so they never appear in process argv.
   const tempInput = await createTempPath(workspace, 'security-input');
   const tempOutput = await createTempPath(workspace, 'security-output');
   try {
     await fs.writeFile(tempInput, metadataBytes, { mode: 0o600, flag: 'wx' });
-    const args = [
-      '--encrypt', input.userPassword ?? '', input.ownerPassword ?? '', '256',
-      `--print=${input.permissions.printing ? 'full' : 'none'}`,
-      `--extract=${input.permissions.copying ? 'y' : 'n'}`,
-      '--modify=none', '--annotate=n', '--', tempInput, tempOutput
-    ];
+    const args = await buildQpdfEncryptArgs({
+      ...(input.userPassword !== undefined ? { userPassword: input.userPassword } : {}),
+      ...(input.ownerPassword !== undefined ? { ownerPassword: input.ownerPassword } : {}),
+      printing: input.permissions.printing,
+      copying: input.permissions.copying,
+      inputPath: tempInput,
+      outputPath: tempOutput
+    });
     await runQpdf(args);
     const outputBytes = await fs.readFile(tempOutput);
     if (outputBytes.length < 100 || outputBytes.subarray(0, 5).toString('ascii') !== '%PDF-') throw new AppError('qpdf no generó un PDF válido.', 'QPDF_INVALID_OUTPUT');

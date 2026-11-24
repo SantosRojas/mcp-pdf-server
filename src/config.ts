@@ -97,5 +97,6 @@ export const config = {
   imageMaxBytes: integer(process.env.PDF_MCP_IMAGE_MAX_BYTES, 8 * 1024 * 1024, 1024, 50 * 1024 * 1024),
   maxConcurrentRenders: integer(process.env.PDF_MCP_MAX_CONCURRENT_RENDERS, 2, 1, 16),
   qpdfPath: process.env.QPDF_PATH ?? 'qpdf',
-  qpdfTimeoutMs: integer(process.env.PDF_MCP_QPDF_TIMEOUT_MS, 30_000, 1_000, 300_000)
+  qpdfTimeoutMs: integer(process.env.PDF_MCP_QPDF_TIMEOUT_MS, 30_000, 1_000, 300_000),
+  sessionTtlMs: integer(process.env.PDF_MCP_SESSION_TTL_MS, 30 * 60 * 1_000, 5_000, 24 * 60 * 60 * 1_000)
 } as const;

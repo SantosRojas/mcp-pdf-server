@@ -94,12 +94,69 @@ export function probeQpdf(): Promise<{ available: boolean; command: string; vers
   return probe;
 }
 
-/** Runs qpdf with a hard timeout. Passwords travel as arguments, so run it with a dedicated account. */
-export async function runQpdf(args: string[]): Promise<void> {
+/**
+ * Formats qpdf arguments as newline-delimited lines for `@-` stdin delivery so sensitive
+ * passwords never appear in OS process command-line arguments (`ps` / `/proc/<pid>/cmdline`).
+ */
+export function serializeQpdfArgFile(args: readonly string[]): string {
+  for (const arg of args) {
+    if (/[\r\n\0]/.test(arg)) {
+      throw new AppError('Los argumentos de qpdf no pueden contener saltos de línea ni caracteres nulos.', 'QPDF_INVALID_ARGUMENT');
+    }
+  }
+  return `${args.join('\n')}\n`;
+}
+
+export function supportsNamedPasswordFlags(versionString?: string): boolean {
+  const match = versionString?.match(/version\s+(\d+)\.(\d+)/i);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 11 || (major === 11 && minor >= 7);
+}
+
+export async function buildQpdfEncryptArgs(options: {
+  userPassword?: string;
+  ownerPassword?: string;
+  printing: boolean;
+  copying: boolean;
+  inputPath: string;
+  outputPath: string;
+}): Promise<string[]> {
+  const user = options.userPassword ?? '';
+  const owner = options.ownerPassword ?? '';
+  const resolved = await probeQpdf();
+  const permFlags = [
+    `--print=${options.printing ? 'full' : 'none'}`,
+    `--extract=${options.copying ? 'y' : 'n'}`,
+    '--modify=none',
+    '--annotate=n',
+    '--',
+    options.inputPath,
+    options.outputPath
+  ];
+  if (supportsNamedPasswordFlags(resolved.version)) {
+    return [
+      '--encrypt',
+      ...(user ? [`--user-password=${user}`] : []),
+      ...(owner ? [`--owner-password=${owner}`] : []),
+      '--bits=256',
+      ...permFlags
+    ];
+  }
+  if (user.startsWith('-') || owner.startsWith('-')) {
+    throw new AppError('Con versiones de qpdf anteriores a 11.7 las contraseñas no pueden comenzar con "-". Actualiza qpdf a >= 11.7.', 'QPDF_INVALID_ARGUMENT');
+  }
+  return ['--encrypt', user, owner, '256', ...permFlags];
+}
+
+/** Runs qpdf with a hard timeout, delivering arguments through `@-` stdin instead of argv. */
+export async function runQpdf(args: readonly string[]): Promise<void> {
+  const stdinPayload = serializeQpdfArgFile(args);
   const resolved = await probeQpdf();
   const executable = resolved.command;
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+    const child = spawn(executable, ['@-'], { stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
     let stderr = '';
     let settled = false;
     const finish = (error?: Error): void => {
@@ -110,6 +167,7 @@ export async function runQpdf(args: string[]): Promise<void> {
     };
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => { if (stderr.length < 4_000) stderr += chunk.slice(0, 4_000 - stderr.length); });
+    child.stdin.on('error', () => { /* handled via process close/error if qpdf exits early */ });
     child.on('error', (error) => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') finish(new AppError('No se encontró qpdf. Instálalo en el sistema (apt/brew/winget/choco) o configura QPDF_PATH; el cifrado PDF requiere qpdf.', 'QPDF_NOT_INSTALLED'));
       else finish(error);
@@ -123,5 +181,6 @@ export async function runQpdf(args: string[]): Promise<void> {
       finish(new AppError(`qpdf excedió el límite de ${config.qpdfTimeoutMs} ms y fue terminado.`, 'QPDF_TIMEOUT'));
     }, config.qpdfTimeoutMs);
     timeout.unref();
+    child.stdin.end(stdinPayload, 'utf8');
   });
 }

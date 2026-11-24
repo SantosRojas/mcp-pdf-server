@@ -12,52 +12,69 @@ const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/sv
 
 type Address = { address: string; family: number };
 
-function ipv4ToNumbers(ip: string): number[] {
-  return ip.split('.').map((part) => Number(part));
-}
+const NON_PUBLIC_IPV4 = (() => {
+  const list = new net.BlockList();
+  // IPv4 special-purpose ranges (RFC 6890 / IANA)
+  list.addSubnet('0.0.0.0', 8, 'ipv4');
+  list.addSubnet('10.0.0.0', 8, 'ipv4');
+  list.addSubnet('100.64.0.0', 10, 'ipv4');
+  list.addSubnet('127.0.0.0', 8, 'ipv4');
+  list.addSubnet('169.254.0.0', 16, 'ipv4');
+  list.addSubnet('172.16.0.0', 12, 'ipv4');
+  list.addSubnet('192.0.0.0', 24, 'ipv4');
+  list.addSubnet('192.0.2.0', 24, 'ipv4');
+  list.addSubnet('192.88.99.0', 24, 'ipv4');
+  list.addSubnet('192.168.0.0', 16, 'ipv4');
+  list.addSubnet('198.18.0.0', 15, 'ipv4');
+  list.addSubnet('198.51.100.0', 24, 'ipv4');
+  list.addSubnet('203.0.113.0', 24, 'ipv4');
+  list.addSubnet('224.0.0.0', 4, 'ipv4');
+  list.addSubnet('240.0.0.0', 4, 'ipv4');
+  return list;
+})();
 
-function blockedIp(ip: string): boolean {
-  const family = net.isIP(ip);
-  if (family === 4) {
-    const [a = 0, b = 0, c = 0] = ipv4ToNumbers(ip);
-    return a === 0 || a === 10 || a === 127 || a >= 224 ||
-      (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && (b === 168 || (b === 0) || (b === 88 && c === 99))) ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 198 && ((b === 18 || b === 19) || (b === 51 && c === 100))) ||
-      (a === 203 && b === 0 && c === 113);
-  }
-  if (family === 6) {
-    const normalized = ip.toLowerCase();
-    if (normalized.startsWith('::ffff:')) {
-      const mapped = normalized.slice(7);
-      if (net.isIP(mapped) === 4) return blockedIp(mapped);
-      const words = mapped.split(':');
-      if (words.length === 2 && words.every((word) => /^[0-9a-f]{1,4}$/.test(word))) {
-        const high = Number.parseInt(words[0]!, 16);
-        const low = Number.parseInt(words[1]!, 16);
-        return blockedIp([high >> 8, high & 255, low >> 8, low & 255].join('.'));
-      }
-      return true;
-    }
-    // Unspecified/loopback/compatible, ULA, link-local, multicast, NAT64,
-    // 6to4, Teredo and documentation prefixes are not useful public image origins.
-    return normalized.startsWith('::') || normalized.startsWith('fc') || normalized.startsWith('fd') ||
-      normalized.startsWith('fe8') || normalized.startsWith('fe9') || normalized.startsWith('fea') ||
-      normalized.startsWith('feb') || normalized.startsWith('fec') || normalized.startsWith('ff') || normalized.startsWith('64:ff9b:') ||
-      normalized.startsWith('2002:') || normalized.startsWith('2001:0:') || normalized.startsWith('2001:db8:');
-  }
+const NON_PUBLIC_IPV6 = (() => {
+  const list = new net.BlockList();
+  // Separate IPv6 BlockList so ::ffff:0:0/96 (IPv4-mapped) and ::ffff:0:0:0/96 (RFC 2765 SIIT)
+  // are unconditionally blocked on IPv6 without blocking public IPv4 unicast on NON_PUBLIC_IPV4.
+  list.addAddress('::', 'ipv6');
+  list.addAddress('::1', 'ipv6');
+  list.addSubnet('::', 96, 'ipv6');
+  list.addSubnet('::ffff:0:0', 96, 'ipv6');
+  list.addSubnet('::ffff:0:0:0', 96, 'ipv6');
+  list.addSubnet('64:ff9b::', 96, 'ipv6');
+  list.addSubnet('64:ff9b:1::', 48, 'ipv6');
+  list.addSubnet('100::', 64, 'ipv6');
+  list.addSubnet('2001::', 32, 'ipv6');
+  list.addSubnet('2001:2::', 48, 'ipv6');
+  list.addSubnet('2001:10::', 28, 'ipv6');
+  list.addSubnet('2001:20::', 28, 'ipv6');
+  list.addSubnet('2001:db8::', 32, 'ipv6');
+  list.addSubnet('2002::', 16, 'ipv6');
+  list.addSubnet('fc00::', 7, 'ipv6');
+  list.addSubnet('fe80::', 10, 'ipv6');
+  list.addSubnet('fec0::', 10, 'ipv6');
+  list.addSubnet('ff00::', 8, 'ipv6');
+  return list;
+})();
+
+export function isBlockedIpAddress(rawIp: string): boolean {
+  const candidate = rawIp.trim().replace(/^\[|\]$/g, '').split('%')[0] ?? '';
+  const family = net.isIP(candidate);
+  if (family === 4) return NON_PUBLIC_IPV4.check(candidate, 'ipv4');
+  if (family === 6) return NON_PUBLIC_IPV6.check(candidate, 'ipv6');
   return true;
 }
 
 async function resolvePublicAddress(rawHostname: string): Promise<Address> {
-  const hostname = rawHostname.replace(/^\[|\]$/g, '');
-  if (hostname.toLowerCase() === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+  const hostname = rawHostname.trim().replace(/^\[|\]$/g, '').replace(/\.+$/, '');
+  const lowered = hostname.toLowerCase();
+  if (!hostname || lowered === 'localhost' || lowered.endsWith('.localhost') || lowered.endsWith('.local')) {
     throw new AppError('Se bloqueó una URL local/privada por seguridad (SSRF).', 'IMAGE_URL_BLOCKED');
   }
   const literalFamily = net.isIP(hostname);
   const addresses = literalFamily ? [{ address: hostname, family: literalFamily }] : await dns.lookup(hostname, { all: true, verbatim: true });
-  if (addresses.length === 0 || addresses.some((item) => blockedIp(item.address))) {
+  if (addresses.length === 0 || addresses.some((item) => isBlockedIpAddress(item.address))) {
     throw new AppError('La URL de imagen resuelve a una dirección IP privada o reservada.', 'IMAGE_URL_BLOCKED');
   }
   return addresses[0] as Address;

@@ -6,8 +6,84 @@ import { config } from '../config.js';
 import { createPdfMcpServer } from '../server.js';
 
 interface SessionRecord { server: McpServer; transport: StreamableHTTPServerTransport; }
-const sessions = new Map<string, SessionRecord>();
+
+export interface SessionRegistryOptions<T> {
+  maxSessions: number;
+  ttlMs: number;
+  onClose?: (id: string, value: T) => Promise<void> | void;
+}
+
+export class SessionRegistry<T> {
+  private readonly entries = new Map<string, { value: T; lastActiveAt: number }>();
+  private pending = 0;
+
+  constructor(private readonly options: SessionRegistryOptions<T>) {}
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  evictExpired(now = Date.now()): number {
+    let evicted = 0;
+    for (const [id, entry] of this.entries) {
+      if (now - entry.lastActiveAt >= this.options.ttlMs) {
+        this.entries.delete(id);
+        evicted += 1;
+        void Promise.resolve(this.options.onClose?.(id, entry.value)).catch(() => undefined);
+      }
+    }
+    return evicted;
+  }
+
+  canAccept(now = Date.now()): boolean {
+    this.evictExpired(now);
+    return this.entries.size + this.pending < this.options.maxSessions;
+  }
+
+  tryReserveSlot(now = Date.now()): boolean {
+    if (!this.canAccept(now)) return false;
+    this.pending += 1;
+    return true;
+  }
+
+  releaseSlot(): void {
+    if (this.pending > 0) this.pending -= 1;
+  }
+
+  get(id: string, now = Date.now()): T | undefined {
+    const entry = this.entries.get(id);
+    if (!entry) return undefined;
+    if (now - entry.lastActiveAt >= this.options.ttlMs) {
+      this.entries.delete(id);
+      void Promise.resolve(this.options.onClose?.(id, entry.value)).catch(() => undefined);
+      return undefined;
+    }
+    entry.lastActiveAt = now;
+    return entry.value;
+  }
+
+  set(id: string, value: T, now = Date.now()): void {
+    this.entries.set(id, { value, lastActiveAt: now });
+  }
+
+  delete(id: string): boolean {
+    return this.entries.delete(id);
+  }
+
+  values(): IterableIterator<T> {
+    return Array.from(this.entries.values(), (entry) => entry.value).values();
+  }
+}
+
 const MAX_SESSIONS = 100;
+const sessions = new SessionRegistry<SessionRecord>({
+  maxSessions: MAX_SESSIONS,
+  ttlMs: config.sessionTtlMs,
+  onClose: async (_id, record) => {
+    await record.transport.close().catch(() => undefined);
+    await record.server.close().catch(() => undefined);
+  }
+});
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -76,14 +152,20 @@ async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<voi
   const suppliedId = sessionId(req);
   let record = suppliedId ? sessions.get(suppliedId) : undefined;
 
+  let reservedSlot = false;
   if (method === 'POST' && !suppliedId) {
-    if (sessions.size >= MAX_SESSIONS) { json(res, 503, { error: 'Se alcanzó el máximo de sesiones MCP.' }); return; }
+    if (!sessions.tryReserveSlot()) { json(res, 503, { error: 'Se alcanzó el máximo de sesiones MCP.' }); return; }
+    reservedSlot = true;
     const mcpServer = createPdfMcpServer();
     let initializedId: string | undefined;
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
         initializedId = id;
+        if (reservedSlot) {
+          sessions.releaseSlot();
+          reservedSlot = false;
+        }
         sessions.set(id, { server: mcpServer, transport });
       },
       onsessionclosed: (id) => { sessions.delete(id); }
@@ -106,6 +188,8 @@ async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<voi
     console.error('[mcp-pdf:http]', error);
     if (!res.headersSent) json(res, 500, { error: 'Error interno procesando MCP.' });
     else res.end();
+  } finally {
+    if (reservedSlot) sessions.releaseSlot();
   }
 }
 
@@ -124,7 +208,11 @@ async function handleHttpRequest(req: IncomingMessage, res: ServerResponse): Pro
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
     const requestUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     // Local container health probes should not need the application bearer token.
-    if (requestUrl.pathname === '/healthz' && req.method === 'GET') { json(res, 200, { status: 'ok', service: 'mcp-pdf-server', sessions: sessions.size }); return; }
+    if (requestUrl.pathname === '/healthz' && req.method === 'GET') {
+      sessions.evictExpired();
+      json(res, 200, { status: 'ok', service: 'mcp-pdf-server', sessions: sessions.size });
+      return;
+    }
     if (!authorized(req)) { json(res, 401, { error: 'Autenticación requerida.' }); return; }
     if (requestUrl.pathname !== config.httpPath) { json(res, 404, { error: 'Not found.' }); return; }
     if (!['GET', 'POST', 'DELETE'].includes(req.method ?? '')) { json(res, 405, { error: 'Method not allowed.' }); return; }
@@ -147,8 +235,11 @@ export async function startHttpTransport(): Promise<void> {
   httpServer.listen(config.port, config.host, () => {
     console.error(`mcp-pdf-server HTTP listo en http://${config.host}:${config.port}${config.httpPath}`);
   });
+  const sweepTimer = setInterval(() => { sessions.evictExpired(); }, 60_000);
+  sweepTimer.unref();
   const shutdown = () => {
-    for (const [, session] of sessions) void session.transport.close().catch(() => undefined);
+    clearInterval(sweepTimer);
+    for (const session of sessions.values()) void session.transport.close().catch(() => undefined);
     httpServer.close();
   };
   process.once('SIGINT', shutdown);
