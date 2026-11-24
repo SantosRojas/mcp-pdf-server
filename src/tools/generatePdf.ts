@@ -1,8 +1,7 @@
 import path from 'node:path';
-import { PDFDocument } from 'pdf-lib';
 import { renderPdf } from '../engine/render.js';
 import { buildCodeMarkdown, codeSidecarPath, collectCodeBlocks } from '../engine/codeExport.js';
-import { validatePdfAst } from '../engine/validate.js';
+import { validatePdfAst, validateSemanticAst } from '../engine/validate.js';
 import type { GeneratePdfInput } from '../schemas/ast.js';
 import { defaultWorkspace, type WorkspaceInfo } from '../runtime/workspace.js';
 import { atomicWrite, resolveOutputFile } from '../utils/files.js';
@@ -17,40 +16,61 @@ interface CodeExportResult {
   bytes: number;
 }
 
-/** Embeds the companion source file inside the PDF (visible in the reader's attachments panel). */
-async function attachCodeSource(pdfBytes: Buffer, name: string, markdown: string): Promise<Buffer> {
-  const pdf = await PDFDocument.load(pdfBytes, { ignoreEncryption: false });
-  await pdf.attach(Buffer.from(markdown, 'utf8'), name, {
-    mimeType: 'text/markdown',
-    description: 'Código fuente exacto de los bloques CodeBlock del documento',
-    creationDate: new Date(),
-    modificationDate: new Date()
-  });
-  return Buffer.from(await pdf.save());
+export interface GeneratePdfOptions {
+  skipValidation?: boolean;
+  preParsed?: boolean;
 }
 
-export async function generatePdf(input: GeneratePdfInput, workspace: WorkspaceInfo = defaultWorkspace()): Promise<Record<string, unknown>> {
-  const validation = validatePdfAst(input);
+export async function generatePdf(
+  input: GeneratePdfInput,
+  workspace: WorkspaceInfo = defaultWorkspace(),
+  options?: GeneratePdfOptions
+): Promise<Record<string, unknown>> {
+  const validation = options?.skipValidation
+    ? { valid: true, errors: [], warnings: [] }
+    : options?.preParsed
+      ? validateSemanticAst(input)
+      : validatePdfAst(input);
   if (!validation.valid) throw new AppError('El AST contiene errores de validación. Corrige los campos indicados y vuelve a intentarlo.', 'AST_VALIDATION_FAILED', undefined, validation.errors);
   const targetPath = await resolveOutputFile(workspace, input.filename, input.outputDir, input.overwrite);
-  const rendered = await renderPdf(input);
-  const warnings = [...validation.warnings, ...rendered.warnings];
-  let pdfBytes = rendered.bytes;
-  const codeExports: CodeExportResult[] = [];
   const blocks = collectCodeBlocks(input.content);
   const mode = input.settings.codeExport;
+  const codeExports: CodeExportResult[] = [];
+  let sidecarPath: string | undefined;
+  let markdownBytes: Buffer | undefined;
+
   if (blocks.length > 0 && mode !== 'none') {
     const documentTitle = input.metadata?.title ?? path.basename(targetPath, path.extname(targetPath));
     const markdown = buildCodeMarkdown(blocks, documentTitle);
-    const markdownBytes = Buffer.from(markdown, 'utf8');
-    const sidecarPath = codeSidecarPath(targetPath);
+    markdownBytes = Buffer.from(markdown, 'utf8');
+    sidecarPath = codeSidecarPath(targetPath);
+  }
+
+  const shouldEmbed = Boolean(markdownBytes && sidecarPath && (mode === 'embedded' || mode === 'both'));
+  const rendered = await renderPdf(
+    input,
+    shouldEmbed && markdownBytes && sidecarPath
+      ? {
+          attachment: {
+            name: path.basename(sidecarPath),
+            content: markdownBytes,
+            mimeType: 'text/markdown',
+            description: 'Código fuente exacto de los bloques CodeBlock del documento'
+          }
+        }
+      : undefined
+  );
+
+  const warnings: unknown[] = [...validation.warnings, ...rendered.warnings];
+  const pdfBytes = rendered.bytes;
+
+  if (blocks.length > 0 && mode !== 'none' && markdownBytes && sidecarPath) {
     if (mode === 'sidecar' || mode === 'both') {
       // The sidecar is derived from the same AST, so a regenerated PDF replaces it.
       await atomicWrite(sidecarPath, markdownBytes, true);
       codeExports.push({ kind: 'sidecar', path: sidecarPath, blocks: blocks.length, bytes: markdownBytes.byteLength });
     }
-    if (mode === 'embedded' || mode === 'both') {
-      pdfBytes = await attachCodeSource(pdfBytes, path.basename(sidecarPath), markdown);
+    if (shouldEmbed) {
       codeExports.push({ kind: 'embedded', name: path.basename(sidecarPath), blocks: blocks.length, bytes: markdownBytes.byteLength });
     }
   } else if (blocks.length > 0) {

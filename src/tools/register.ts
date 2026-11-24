@@ -61,12 +61,20 @@ export function registerPdfTools(server: McpServer): void {
     'list_pdf_components',
     {
       description: 'Lista el catálogo de componentes PDF, sus categorías, propiedades requeridas/opcionales, ejemplos y esquema JSON. Consulta esta herramienta antes de construir el AST.',
-      inputSchema: z.object({ category: z.enum(['layout', 'data', 'technical', 'media', 'typography', 'all']).optional() }).strict()
+      inputSchema: z.object({
+        category: z.enum(['layout', 'data', 'technical', 'media', 'typography', 'all']).optional(),
+        includeSchema: z.boolean().optional()
+      }).strict()
     },
-    async ({ category }) => {
+    async ({ category, includeSchema }) => {
       try {
-        const selected = listPdfComponents(category) as Record<string, unknown>;
-        return ok({ ...selected, features: documentFeatures, componentCount: category && category !== 'all' ? componentCatalog.filter((item) => item.category === category).length : componentCatalog.length });
+        const isAll = !category || category === 'all';
+        const selected = listPdfComponents(category, Boolean(includeSchema)) as Record<string, unknown>;
+        return ok({
+          ...selected,
+          ...(isAll || includeSchema ? { features: documentFeatures } : {}),
+          componentCount: isAll ? componentCatalog.length : componentCatalog.filter((item) => item.category === category).length
+        });
       } catch (error) { return fail(error); }
     }
   );
@@ -94,7 +102,7 @@ export function registerPdfTools(server: McpServer): void {
     async (input) => {
       try {
         const workspace = await getWorkspace(server);
-        return ok(await renderSemaphore.run(() => generatePdf(generatePdfInputSchema.parse(input), workspace)));
+        return ok(await renderSemaphore.run(() => generatePdf(generatePdfInputSchema.parse(input), workspace, { preParsed: true })));
       } catch (error) { return fail(error); }
     }
   );

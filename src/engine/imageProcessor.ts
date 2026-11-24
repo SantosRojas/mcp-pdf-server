@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import dns from 'node:dns/promises';
 import https from 'node:https';
 import type { IncomingHttpHeaders } from 'node:http';
@@ -163,16 +164,82 @@ async function readImageSource(source: string): Promise<Buffer> {
   return fs.readFile(real);
 }
 
+const MAX_IMAGE_CACHE_ENTRIES = 64;
+const MAX_IMAGE_CACHE_BYTES = 64 * 1024 * 1024;
+const imageCache = new Map<string, Buffer>();
+let imageCacheBytes = 0;
+let imageCacheHits = 0;
+
+export function clearImageCache(): void {
+  imageCache.clear();
+  imageCacheBytes = 0;
+  imageCacheHits = 0;
+}
+
+export function getImageCacheStats(): { entries: number; bytes: number; hits: number } {
+  return { entries: imageCache.size, bytes: imageCacheBytes, hits: imageCacheHits };
+}
+
+function getCachedImage(hash: string): Buffer | undefined {
+  const cached = imageCache.get(hash);
+  if (!cached) return undefined;
+  // Refresh LRU order
+  imageCache.delete(hash);
+  imageCache.set(hash, cached);
+  imageCacheHits += 1;
+  return cached;
+}
+
+function setCachedImage(hash: string, buffer: Buffer): void {
+  if (buffer.byteLength > MAX_IMAGE_CACHE_BYTES / 2) return;
+  const existing = imageCache.get(hash);
+  if (existing) {
+    imageCacheBytes -= existing.byteLength;
+    imageCache.delete(hash);
+  }
+  while (imageCache.size >= MAX_IMAGE_CACHE_ENTRIES || imageCacheBytes + buffer.byteLength > MAX_IMAGE_CACHE_BYTES) {
+    const oldest = imageCache.keys().next().value;
+    if (oldest === undefined) break;
+    const removed = imageCache.get(oldest);
+    imageCache.delete(oldest);
+    if (removed) imageCacheBytes -= removed.byteLength;
+  }
+  imageCache.set(hash, buffer);
+  imageCacheBytes += buffer.byteLength;
+}
+
+function isJpegBuffer(raw: Buffer): boolean {
+  return raw.byteLength >= 3 && raw[0] === 0xff && raw[1] === 0xd8 && raw[2] === 0xff;
+}
+
+function looksLikeSvgHeader(raw: Buffer): boolean {
+  if (isJpegBuffer(raw)) return false;
+  if (raw.byteLength >= 8 && raw[0] === 0x89 && raw[1] === 0x50 && raw[2] === 0x4e && raw[3] === 0x47) return false;
+  if (raw.byteLength >= 12 && raw.subarray(0, 4).toString('ascii') === 'RIFF' && raw.subarray(8, 12).toString('ascii') === 'WEBP') return false;
+  const head = raw.subarray(0, 4_096).toString('utf8');
+  return /<svg[\s>]|<\?xml[\s?]|<!DOCTYPE\s+svg/i.test(head);
+}
+
 export async function processImageSource(source: string): Promise<Buffer> {
   const raw = await readImageSource(source);
-  const sourceText = raw.toString('utf8');
-  if (/<svg[\s>]/i.test(sourceText)) {
-    if (/<\s*(?:script|foreignObject)\b|<!DOCTYPE|<!ENTITY|\bon[a-z]+\s*=|(?:href|xlink:href)\s*=\s*['\"](?!#)|url\s*\(\s*['\"]?(?!#)|@import|@font-face/i.test(sourceText)) {
-      throw new AppError('El SVG contiene scripts, referencias externas o construcciones no permitidas.', 'UNSAFE_SVG');
+  const hash = createHash('sha256').update(raw).digest('hex');
+  const cached = getCachedImage(hash);
+  if (cached) return cached;
+
+  if (looksLikeSvgHeader(raw)) {
+    const sourceText = raw.toString('utf8');
+    if (/<svg[\s>]|<!DOCTYPE\s+svg/i.test(sourceText)) {
+      if (/<\s*(?:script|foreignObject)\b|<!DOCTYPE|<!ENTITY|\bon[a-z]+\s*=|(?:href|xlink:href)\s*=\s*['\"](?!#)|url\s*\(\s*['\"]?(?!#)|@import|@font-face/i.test(sourceText)) {
+        throw new AppError('El SVG contiene scripts, referencias externas o construcciones no permitidas.', 'UNSAFE_SVG');
+      }
     }
   }
-  const result = await sharp(raw, { limitInputPixels: 40_000_000, failOn: 'error' }).png({ compressionLevel: 9 }).toBuffer();
+  const pipeline = sharp(raw, { limitInputPixels: 40_000_000, failOn: 'error' }).rotate();
+  const result = isJpegBuffer(raw)
+    ? await pipeline.jpeg({ quality: 88, mozjpeg: true }).toBuffer()
+    : await pipeline.png({ compressionLevel: 9 }).toBuffer();
   if (result.byteLength > config.imageMaxBytes) throw new AppError('La imagen procesada supera el límite configurado.', 'IMAGE_TOO_LARGE');
+  setCachedImage(hash, result);
   return result;
 }
 

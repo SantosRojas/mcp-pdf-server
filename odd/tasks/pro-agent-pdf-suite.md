@@ -62,8 +62,8 @@ Test runner: npm test && npm run typecheck | Mirror: pending (Engram MCP unavail
 
 ## Tasks
 
-- [x] **T1** (`S1`) | Route: `inline` (single security unit ~240 lines; Risk: item 2 security) | Evidence: `RED -> GREEN (43/43 npm test, typecheck, smoke:http 5/5) + Independent Verifier PASS` | Commit: `pending chain-strategy`
-- [ ] **T2** (`S2`) | Route: `inline` (shares `src/engine/imageProcessor.ts` with T1; ~250 lines) | Commit: `pending`
+- [x] **T1** (`S1`) | Route: `inline` (single security unit ~240 lines; Risk: item 2 security) | Evidence: `RED -> GREEN (43/43 npm test, typecheck, smoke:http 5/5) + Independent Verifier PASS` | Commit: `46e65ed` (`feat/pdf-pro-1-security`)
+- [x] **T2** (`S2`) | Route: `inline` (shares `src/engine/imageProcessor.ts` with T1; ~320 lines; Risk: none) | Evidence: `RED -> GREEN (47/47 npm test, typecheck)` | Commit: `committing on feat/pdf-pro-2-engine-perf`
 - [ ] **T3** (`S3`) | Route: `inline` (foundational `src/schemas/ast.ts` + `src/engine/render.tsx` fixes required by T4–T6; ~380 lines) | Commit: `pending`
 - [ ] **T4** (`S4`) | Route: `inline` (extends `src/schemas/ast.ts` + `src/engine/render.tsx` on top of T3; ~360 lines) | Commit: `pending`
 - [ ] **T5** (`S5`) | Route: `inline` (extends `src/schemas/ast.ts` + `src/engine/render.tsx` on top of T4; ~390 lines) | Commit: `pending`
@@ -75,4 +75,5 @@ Test runner: npm test && npm run typecheck | Mirror: pending (Engram MCP unavail
 - **L2 (2026-11-24)**: `"se colgo en algun proceso? o esta avanzando?"` — Delivered 4-pillar technical audit with `path:line` evidence (`odd_readonly_explorer` + parent spot check on `src/engine/imageProcessor.ts`).
 - **L3 (2026-11-24)**: `"apliacalas"` — Explicit authorization to implement all 4 pillars. Baseline `npm test` (39/39 pass) and `npm run typecheck` verified green; pre-existing uncommitted changes in `src/engine/design.ts` and `tests/ast.test.ts` preserved.
 - **L4 (2026-11-24)**: Completed **T1 (`S1`)**: separated `NON_PUBLIC_IPV4` and `NON_PUBLIC_IPV6` `net.BlockList` sets (including `::ffff:0:0/96` and `::ffff:0:0:0/96` SIIT), normalized FQDN hostnames, moved `qpdf` arguments to `@-` stdin with `--user-password=`/`--owner-password=` (`qpdf >= 11.7`), and added `SessionRegistry` idle TTL (`PDF_MCP_SESSION_TTL_MS`) + atomic slot reservation in `src/transports/http.ts`. Verified `43/43` tests, `typecheck`, `smoke:http` (`5/5`), and Independent Verifier recheck `PASS`. Pausing before first commit to request chain strategy (`stacked-to-main`, `feature-branch-chain`, or single branch `single-pr`) since forecast (~1,950 lines) exceeds ~400-line slice budget. Mirror: pending (Engram MCP unavailable).
-- **L5 (2026-11-24)**: `"1"` — User selected `stacked-to-main`. Committing `T1` on `feat/pdf-pro-1-security` and stacking `feat/pdf-pro-2-engine-perf` .. `feat/pdf-pro-6-mcp-ergonomics` sequentially.
+- **L5 (2026-11-24)**: `"1"` — User selected `stacked-to-main`. Committing `T1` on `feat/pdf-pro-1-security` (`46e65ed`) and stacking `feat/pdf-pro-2-engine-perf` .. `feat/pdf-pro-6-mcp-ergonomics` sequentially.
+- **L6 (2026-11-24)**: Completed **T2 (`S2`)**: JPEG preservation + 4 KB SVG header check + SHA-256 LRU cache in `imageProcessor.ts`, memoized `getComponentSchema()`, category-lean `list_pdf_components`, image/QR count + `InvoiceSummary` arithmetic + local asset checks in `validate.ts`, and single-pass `PDFDocument.load` code attachment in `render.tsx`/`generatePdf.ts`. Verified `47/43 -> 47/47` tests and `typecheck`.

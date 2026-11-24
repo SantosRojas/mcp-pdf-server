@@ -1,3 +1,5 @@
+import fsSync from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import { componentCatalog } from '../components/catalog.js';
 import { cyclicFlowchartEdges } from './flowchartLayout.js';
@@ -6,34 +8,13 @@ import { config } from '../config.js';
 
 export interface ValidationIssue { path: string; message: string; code?: string }
 
-export function validatePdfAst(input: unknown): { valid: boolean; errors: ValidationIssue[]; warnings: ValidationIssue[]; schema?: unknown } {
-  let serialized: string | undefined;
-  try { serialized = JSON.stringify(input); }
-  catch { return { valid: false, errors: [{ path: '$', message: 'El AST no es serializable como JSON.', code: 'INVALID_JSON_VALUE' }], warnings: [] }; }
-  if (serialized === undefined) return { valid: false, errors: [{ path: '$', message: 'El AST debe ser un objeto JSON.', code: 'INVALID_JSON_VALUE' }], warnings: [] };
-  if (Buffer.byteLength(serialized, 'utf8') > config.maxInputBytes) {
-    return { valid: false, errors: [{ path: '$', message: `El AST supera el límite de ${config.maxInputBytes} bytes.`, code: 'INPUT_TOO_LARGE' }], warnings: [] };
-  }
-  // Check depth iteratively before recursive Zod validation to avoid stack exhaustion.
-  const stack: Array<{ value: unknown; depth: number; path: string }> = [{ value: input, depth: 0, path: '$' }];
-  while (stack.length) {
-    const current = stack.pop()!;
-    if (current.depth > 30) return { valid: false, errors: [{ path: current.path, message: 'La profundidad máxima del AST es 30 niveles.', code: 'AST_DEPTH_LIMIT' }], warnings: [] };
-    if (current.value && typeof current.value === 'object') {
-      if (Array.isArray(current.value)) current.value.forEach((value, index) => stack.push({ value, depth: current.depth + 1, path: `${current.path}.${index}` }));
-      else Object.entries(current.value).forEach(([key, value]) => stack.push({ value, depth: current.depth + 1, path: `${current.path}.${key}` }));
-    }
-  }
-  const parsed = generatePdfInputSchema.safeParse(input);
-  if (!parsed.success) {
-    return {
-      valid: false,
-      errors: parsed.error.issues.map((issue) => ({ path: issue.path.map(String).join('.'), message: issue.message, code: issue.code })),
-      warnings: []
-    };
-  }
+let cachedComponentSchema: unknown;
+
+export function validateSemanticAst(parsed: GeneratePdfInput): { valid: boolean; errors: ValidationIssue[]; warnings: ValidationIssue[] } {
   const errors: ValidationIssue[] = [];
   const warnings: ValidationIssue[] = [];
+  const uniqueImages = new Set<string>();
+  const uniqueQrs = new Set<string>();
   const walk = (nodes: unknown[], parent = 'content'): void => {
     nodes.forEach((item, index) => {
       if (!item || typeof item !== 'object') return;
@@ -44,6 +25,18 @@ export function validatePdfAst(input: unknown): { valid: boolean; errors: Valida
       if (node.type === 'InvoiceSummary') {
         if (typeof node.locale === 'string') validateLocale(node.locale, `${current}.locale`, errors);
         if (typeof node.currency === 'string') validateCurrency(node.currency, `${current}.currency`, errors);
+        const subtotal = typeof node.subtotal === 'number' ? node.subtotal : 0;
+        const tax = typeof node.tax === 'number' ? node.tax : 0;
+        const discount = typeof node.discount === 'number' ? node.discount : 0;
+        const total = typeof node.total === 'number' ? node.total : 0;
+        const expected = Number((subtotal + tax - discount).toFixed(2));
+        if (Math.abs(expected - total) > 0.02) {
+          warnings.push({
+            path: `${current}.total`,
+            message: `El total (${total}) no coincide con subtotal + tax - discount (${expected}).`,
+            code: 'INVOICE_TOTAL_MISMATCH'
+          });
+        }
       }
       if (node.type === 'DataTable' && Array.isArray(node.columns) && Array.isArray(node.rows)) {
         const columns = node.columns as Array<{ key: string }>;
@@ -84,41 +77,100 @@ export function validatePdfAst(input: unknown): { valid: boolean; errors: Valida
           if (line > lineCount) warnings.push({ path: `${current}.highlightLines`, message: `La línea ${line} supera las ${lineCount} líneas del código.` });
         });
       }
-      if (node.type === 'Image' && typeof node.src === 'string') validateImageSource(node.src, `${current}.src`, errors, warnings);
-      if (node.type === 'DocumentHeader' && typeof node.logoUrl === 'string') validateImageSource(node.logoUrl, `${current}.logoUrl`, errors, warnings);
+      if (node.type === 'Image' && typeof node.src === 'string') {
+        uniqueImages.add(node.src);
+        validateImageSource(node.src, `${current}.src`, errors, warnings);
+      }
+      if (node.type === 'DocumentHeader' && typeof node.logoUrl === 'string') {
+        uniqueImages.add(node.logoUrl);
+        validateImageSource(node.logoUrl, `${current}.logoUrl`, errors, warnings);
+      }
+      if (node.type === 'QRCode' && typeof node.value === 'string') {
+        uniqueQrs.add(node.value);
+      }
       if (Array.isArray(node.children)) walk(node.children, `${current}.children`);
     });
   };
-  walk(parsed.data.content);
+  walk(parsed.content);
+  if (uniqueImages.size > 40) {
+    errors.push({ path: 'content', message: 'Un documento puede incluir como máximo 40 fuentes de imagen únicas.', code: 'IMAGE_COUNT_LIMIT' });
+  }
+  if (uniqueQrs.size > 100) {
+    errors.push({ path: 'content', message: 'Un documento puede incluir como máximo 100 códigos QR únicos.', code: 'QR_COUNT_LIMIT' });
+  }
   return { valid: errors.length === 0, errors, warnings };
 }
 
-function validateImageSource(source: string, path: string, errors: ValidationIssue[], warnings: ValidationIssue[]): void {
+export function validatePdfAst(input: unknown): { valid: boolean; errors: ValidationIssue[]; warnings: ValidationIssue[]; schema?: unknown } {
+  let serialized: string | undefined;
+  try { serialized = JSON.stringify(input); }
+  catch { return { valid: false, errors: [{ path: '$', message: 'El AST no es serializable como JSON.', code: 'INVALID_JSON_VALUE' }], warnings: [] }; }
+  if (serialized === undefined) return { valid: false, errors: [{ path: '$', message: 'El AST debe ser un objeto JSON.', code: 'INVALID_JSON_VALUE' }], warnings: [] };
+  if (Buffer.byteLength(serialized, 'utf8') > config.maxInputBytes) {
+    return { valid: false, errors: [{ path: '$', message: `El AST supera el límite de ${config.maxInputBytes} bytes.`, code: 'INPUT_TOO_LARGE' }], warnings: [] };
+  }
+  // Check depth iteratively before recursive Zod validation to avoid stack exhaustion.
+  const stack: Array<{ value: unknown; depth: number; path: string }> = [{ value: input, depth: 0, path: '$' }];
+  while (stack.length) {
+    const current = stack.pop()!;
+    if (current.depth > 30) return { valid: false, errors: [{ path: current.path, message: 'La profundidad máxima del AST es 30 niveles.', code: 'AST_DEPTH_LIMIT' }], warnings: [] };
+    if (current.value && typeof current.value === 'object') {
+      if (Array.isArray(current.value)) current.value.forEach((value, index) => stack.push({ value, depth: current.depth + 1, path: `${current.path}.${index}` }));
+      else Object.entries(current.value).forEach(([key, value]) => stack.push({ value, depth: current.depth + 1, path: `${current.path}.${key}` }));
+    }
+  }
+  const parsed = generatePdfInputSchema.safeParse(input);
+  if (!parsed.success) {
+    return {
+      valid: false,
+      errors: parsed.error.issues.map((issue) => ({ path: issue.path.map(String).join('.'), message: issue.message, code: issue.code })),
+      warnings: []
+    };
+  }
+  return validateSemanticAst(parsed.data);
+}
+
+function validateImageSource(source: string, propPath: string, errors: ValidationIssue[], warnings: ValidationIssue[]): void {
   if (/^https?:\/\//i.test(source)) {
     try {
       const url = new URL(source);
-      if (url.protocol !== 'https:') errors.push({ path, message: 'Las imágenes remotas deben usar HTTPS.' });
-      if (url.username || url.password) errors.push({ path, message: 'No se permiten credenciales embebidas en URLs.' });
-    } catch { errors.push({ path, message: 'URL de imagen no válida.' }); }
-    warnings.push({ path, message: 'La accesibilidad remota se comprueba durante generate_pdf; valide que el host sea confiable.' });
+      if (url.protocol !== 'https:') errors.push({ path: propPath, message: 'Las imágenes remotas deben usar HTTPS.' });
+      if (url.username || url.password) errors.push({ path: propPath, message: 'No se permiten credenciales embebidas en URLs.' });
+    } catch { errors.push({ path: propPath, message: 'URL de imagen no válida.' }); }
+    warnings.push({ path: propPath, message: 'La accesibilidad remota se comprueba durante generate_pdf; valide que el host sea confiable.' });
   } else if (source.startsWith('data:')) {
-    if (!/^data:image\/(?:png|jpeg|webp|svg\+xml);base64,/i.test(source)) errors.push({ path, message: 'Data URI inválido; use PNG/JPEG/WebP/SVG en Base64.' });
-  } else if (source.startsWith('/') || source.split(/[\\/]/).includes('..')) {
-    errors.push({ path, message: 'Use una ruta relativa dentro de PDF_MCP_ASSET_DIR; no se permiten rutas absolutas ni traversal.' });
+    if (!/^data:image\/(?:png|jpeg|webp|svg\+xml);base64,/i.test(source)) errors.push({ path: propPath, message: 'Data URI inválido; use PNG/JPEG/WebP/SVG en Base64.' });
+  } else if (path.isAbsolute(source) || source.split(/[\\/]/).includes('..')) {
+    errors.push({ path: propPath, message: 'Use una ruta relativa dentro de PDF_MCP_ASSET_DIR; no se permiten rutas absolutas ni traversal.' });
+  } else {
+    const candidate = path.resolve(config.assetDir, source);
+    if (!fsSync.existsSync(candidate)) {
+      warnings.push({
+        path: propPath,
+        message: `No se encontró el activo local '${source}' en PDF_MCP_ASSET_DIR; se mostrará un marcador si no existe al renderizar.`,
+        code: 'IMAGE_ASSET_MISSING'
+      });
+    }
   }
 }
 
 export function getComponentSchema(): unknown {
-  return z.toJSONSchema(generatePdfInputSchema, { target: 'draft-07', io: 'input', cycles: 'ref' });
+  cachedComponentSchema ??= z.toJSONSchema(generatePdfInputSchema, { target: 'draft-07', io: 'input', cycles: 'ref' });
+  return cachedComponentSchema;
+}
+
+export function invalidateComponentSchemaCache(): void {
+  cachedComponentSchema = undefined;
 }
 
 export function asGenerateInput(input: unknown): GeneratePdfInput {
   return generatePdfInputSchema.parse(input);
 }
 
-export function catalogForCategory(category: string | undefined): unknown {
+export function catalogForCategory(category: string | undefined, includeSchema = false): unknown {
   if (!category || category === 'all') return { components: componentCatalog, features: undefined, schema: getComponentSchema() };
-  return { components: componentCatalog.filter((component) => component.category === category), schema: getComponentSchema() };
+  const components = componentCatalog.filter((component) => component.category === category);
+  return includeSchema ? { components, schema: getComponentSchema() } : { components };
 }
 
 function validateLocale(locale: string, path: string, errors: ValidationIssue[]): void {

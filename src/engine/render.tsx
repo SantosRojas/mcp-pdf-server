@@ -512,9 +512,18 @@ async function prepareQrCodes(nodes: unknown[]): Promise<{ codes: Map<string, Bu
   return { codes, warnings };
 }
 
+export interface RenderOptions {
+  attachment?: {
+    name: string;
+    content: Buffer;
+    mimeType?: string;
+    description?: string;
+  };
+}
+
 export interface RenderResult { bytes: Buffer; pageCount: number; warnings: string[] }
 
-export async function renderPdf(input: GeneratePdfInput): Promise<RenderResult> {
+export async function renderPdf(input: GeneratePdfInput, options?: RenderOptions): Promise<RenderResult> {
   await registerOptionalFonts();
   const { theme, warnings: fontWarnings } = resolveTheme(input.theme);
   const [{ images, warnings }, { codes: qrCodes, warnings: qrWarnings }] = await Promise.all([prepareImages(input.content), prepareQrCodes(input.content)]);
@@ -575,8 +584,19 @@ export async function renderPdf(input: GeneratePdfInput): Promise<RenderResult> 
   } finally {
     if (!completed && !stream.destroyed) stream.destroy();
   }
-  const bytes = Buffer.concat(chunks, totalBytes);
+  let bytes: Buffer = Buffer.concat(chunks, totalBytes);
   if (bytes.byteLength === 0) throw new AppError('El motor PDF devolvió un archivo vacío.', 'RENDER_EMPTY_OUTPUT');
   const parsed = await PDFDocument.load(bytes, { ignoreEncryption: false });
-  return { bytes, pageCount: parsed.getPageCount(), warnings };
+  const pageCount = parsed.getPageCount();
+  if (options?.attachment) {
+    const now = new Date();
+    await parsed.attach(options.attachment.content, options.attachment.name, {
+      mimeType: options.attachment.mimeType ?? 'text/markdown',
+      description: options.attachment.description ?? 'Companion attachment',
+      creationDate: now,
+      modificationDate: now
+    });
+    bytes = Buffer.from(await parsed.save());
+  }
+  return { bytes, pageCount, warnings };
 }
