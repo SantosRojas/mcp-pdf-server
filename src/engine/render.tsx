@@ -11,6 +11,7 @@ import { CodeGutter } from './codeGutter.js';
 import { CODE_LINE_HEIGHT, codeGutterWidth, computeCodeMetrics, normalizeCodeLines, wrapCodeLine } from './codeMetrics.js';
 import { splitInlineMarkup } from './inlineMarkup.js';
 import { compileMarkdownToAst } from './markdownParser.js';
+import { shouldSplitTable } from './tableLayout.js';
 import { computeFlowchartLayout, flowchartMetrics, type ArrowDirection, type FlowchartKind, type PositionedFlowchartNode, type RoutedFlowchartEdge } from './flowchartLayout.js';
 import { registerOptionalFonts, resolveTheme, type ThemeTokens } from './themeProvider.js';
 import { LINE_HEIGHT, RADIUS, SPACE, TRACKING, TYPE, metricValueSize, mix, withAlpha } from './design.js';
@@ -675,11 +676,12 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
       const totalRows = n.rows.length + (n.footerRow ? 1 : 0);
       const estimatedHeight = (n.compact ? 5 : 7) * 2 + TYPE.caption + (n.caption ? 14 : 0) + 16 + totalRows * rowHeight;
       const fitsOnOnePage = totalRows <= 12 && estimatedHeight <= context.contentHeight;
+      const splittable = shouldSplitTable(totalRows, fitsOnOnePage);
       const cellSize = n.compact ? 7 : 8;
-      const header = <View fixed={!fitsOnOnePage} style={{ flexDirection: 'row', backgroundColor: t.primary, paddingVertical: n.compact ? 5 : 7, paddingHorizontal: 6, borderTopLeftRadius: RADIUS.sm, borderTopRightRadius: RADIUS.sm }}>
+      const header = <View fixed={splittable} style={{ flexDirection: 'row', backgroundColor: t.primary, paddingVertical: n.compact ? 5 : 7, paddingHorizontal: 6, borderTopLeftRadius: RADIUS.sm, borderTopRightRadius: RADIUS.sm }}>
         {n.columns.map((column: any, index: number) => <PdfText key={column.key} style={{ width: widths[index], color: t.onPrimary, fontSize: cellSize, fontWeight: 700, textAlign: column.align, letterSpacing: 0.25, paddingRight: 6, fontFamily: t.heading }}>{column.label}</PdfText>)}
       </View>;
-      return <View key={n.id} wrap={!fitsOnOnePage} style={{ marginVertical: SPACE.md }}>
+      return <View key={n.id} wrap={splittable} {...(splittable ? { minPresenceAhead: 44 } : {})} style={{ marginVertical: SPACE.md }}>
         {n.caption ? <PdfText style={{ color: t.muted, fontSize: TYPE.caption, marginBottom: SPACE.xs + 1, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{n.caption}</PdfText> : null}
         {header}
         {n.rows.map((row: Record<string, unknown>, rowIndex: number) => <View key={rowIndex} wrap={false} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: n.compact ? 3 : 6, paddingHorizontal: 6, backgroundColor: n.zebra && rowIndex % 2 === 1 ? t.surface : '#FFFFFF', borderBottomWidth: 0.5, borderBottomColor: t.border }}>
