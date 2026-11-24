@@ -92,7 +92,7 @@ try {
   await client.connect(transport);
 
   const tools = await client.listTools();
-  check('el cliente HTTP lista las 7 herramientas', tools.tools.length === 7, tools.tools.map((tool) => tool.name));
+  check('el cliente HTTP lista las 8 herramientas', tools.tools.length === 8 && tools.tools.some((t) => t.name === 'inspect_pdf'), tools.tools.map((tool) => tool.name));
 
   const generated = await client.callTool({
     name: 'generate_pdf',

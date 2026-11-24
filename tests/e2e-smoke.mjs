@@ -82,6 +82,8 @@ const transport = new StdioClientTransport({
     ...process.env,
     PDF_MCP_TRANSPORT: 'stdio',
     PDF_MCP_OUTPUT_DIR: outputDir,
+    PDF_MCP_ALLOWED_DIRS: '',
+    PDF_MCP_ALLOW_ANY_PATH: 'false',
     PDF_MCP_ASSET_DIR: path.join(root, 'assets'),
     PDF_MCP_FONT_DIR: path.join(root, 'assets', 'fonts')
   },
@@ -98,7 +100,7 @@ try {
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  check('expone las 7 herramientas esperadas', names.length === 7 && names.includes('generate_pdf') && names.includes('get_pdf_server_info') && names.includes('list_pdfs'), names);
+  check('expone las 8 herramientas esperadas', names.length === 8 && names.includes('generate_pdf') && names.includes('inspect_pdf') && names.includes('get_pdf_server_info') && names.includes('list_pdfs'), names);
 
   const info = await call(client, 'get_pdf_server_info', {});
   check('get_pdf_server_info describe workspace, fuentes y capacidades', !info.isError && info.body.success === true && Array.isArray(info.body.output?.allowedRoots), info.body);
@@ -116,6 +118,8 @@ try {
 
   const generated = await call(client, 'generate_pdf', { ...example, filename: 'e2e-informe-ventas', overwrite: true });
   check('generate_pdf genera el informe de ejemplo con path y relativePath', !generated.isError && generated.body.success === true && typeof generated.body.relativePath === 'string', generated.body);
+  const inspectedViaTool = await call(client, 'inspect_pdf', { filePath: generated.body.path });
+  check('inspect_pdf devuelve metadatos y detalle de páginas', !inspectedViaTool.isError && inspectedViaTool.body.success === true && inspectedViaTool.body.pages > 0, inspectedViaTool.body);
   const report = await inspectPdf(generated.body.path);
   check('el informe es un PDF con páginas', report.pages > 0 && report.bytes > 1000, report);
   check('los metadatos del PDF se aplicaron', report.title === example.metadata.title, report.title);

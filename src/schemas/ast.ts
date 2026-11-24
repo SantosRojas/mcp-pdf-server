@@ -221,15 +221,15 @@ const fixedHeaderSchema = z.object({ text: z.string().max(200).optional(), showR
 const fixedFooterSchema = z.object({ text: z.string().max(200).optional(), showPageNumbers: z.boolean().default(true), showRule: z.boolean().default(true), height: z.number().min(12).max(80).default(28), skipFirstPage: z.boolean().default(false), align: z.enum(['left', 'center', 'right']).default('center') }).strict().optional();
 
 export const generatePdfInputSchema = z.object({
-  filename: z.string().min(1).max(120).regex(/^[\p{L}\p{N}][\p{L}\p{N} _.-]*$/u, 'filename solo puede contener letras, números, espacios, puntos, guiones y guiones bajos'),
-  outputDir: z.string().max(500).optional(),
-  overwrite: z.boolean().default(false),
-  settings: settingsSchema,
-  theme: themeSchema,
-  metadata: z.object({ title: z.string().max(300).optional(), author: z.string().max(200).optional(), subject: z.string().max(500).optional(), keywords: z.array(z.string().max(80)).max(30).optional() }).strict().optional(),
-  fixedHeader: fixedHeaderSchema,
-  fixedFooter: fixedFooterSchema,
-  content: z.array(componentNodeSchema).min(1).max(500)
+  filename: z.string().min(1).max(120).regex(/^[\p{L}\p{N}][\p{L}\p{N} _.-]*$/u, 'filename solo puede contener letras, números, espacios, puntos, guiones y guiones bajos').describe('Nombre base del archivo PDF (sin rutas; .pdf es opcional).'),
+  outputDir: z.string().max(500).optional().describe('Carpeta de salida relativa al workspace (p. ej. "reports/2026" o ".") o ruta absoluta permitida.'),
+  overwrite: z.boolean().default(false).describe('Reemplaza el PDF existente si ya existe con el mismo nombre.'),
+  settings: settingsSchema.describe('Tamaño de página (A4/LETTER/LEGAL), orientación, locale BCP 47, marca de agua opcional, codeExport y márgenes en pt.'),
+  theme: themeSchema.describe('Preset visual editorial, colores opcionales en #RRGGBB y combinación de fuentes (Inter/Times-Roman/Roboto/etc.).'),
+  metadata: z.object({ title: z.string().max(300).optional(), author: z.string().max(200).optional(), subject: z.string().max(500).optional(), keywords: z.array(z.string().max(80)).max(30).optional() }).strict().optional().describe('Metadatos estándar incrustados en el PDF.'),
+  fixedHeader: fixedHeaderSchema.describe('Cabecera repetida opcional (soporta skipFirstPage, align y placeholders {{pageNumber}}/{{totalPages}}).'),
+  fixedFooter: fixedFooterSchema.describe('Pie repetido opcional con numeración localizada según settings.locale y skipFirstPage.'),
+  content: z.array(componentNodeSchema).min(1).max(500).describe('Secuencia declarativa de hasta 500 componentes AST (CoverPage, TableOfContents, Markdown, Grid, DataTable, Chart, Flowchart, Section, etc.).')
 }).strict();
 
 // Deliberately permissive: this tool must receive malformed ASTs so it can report
@@ -255,9 +255,15 @@ const securityPdfInputObjectSchema = z.object({
 }).strict();
 
 export const listPdfsInputSchema = z.object({
-  directory: z.string().min(1).max(1_000).optional(),
-  recursive: z.boolean().default(false),
-  limit: z.number().int().min(1).max(200).default(50)
+  directory: z.string().min(1).max(1_000).optional().describe('Carpeta opcional dentro de los roots permitidos.'),
+  recursive: z.boolean().default(false).describe('Busca también en subdirectorios.'),
+  limit: z.number().int().min(1).max(200).default(50).describe('Cantidad máxima de archivos PDF a listar.')
+}).strict();
+
+export const inspectPdfInputSchema = z.object({
+  filePath: z.string().min(1).max(1_000).describe('Ruta al PDF (absoluta permitida o relativa al workspace/output).'),
+  maxPages: z.number().int().min(1).max(100).default(30).describe('Máximo de páginas a inspeccionar en detalle.'),
+  includeTextPreview: z.boolean().default(true).describe('Incluye extracto de texto por página para verificar saltos y contenido.')
 }).strict();
 
 export const serverInfoInputSchema = z.object({}).strict();
@@ -271,4 +277,5 @@ export const securityPdfInputSchema = securityPdfInputObjectSchema.superRefine((
 export type GeneratePdfInput = z.infer<typeof generatePdfInputSchema>;
 export type MergePdfsInput = z.infer<typeof mergePdfsInputSchema>;
 export type SecurityPdfInput = z.infer<typeof securityPdfInputSchema>;
+export type InspectPdfInput = z.infer<typeof inspectPdfInputSchema>;
 export type ComponentNode = z.infer<typeof componentNodeSchema>;

@@ -86,6 +86,7 @@ export async function generatePdf(
     pages: rendered.pageCount,
     bytes: pdfBytes.byteLength,
     sizeHuman: `${(pdfBytes.byteLength / 1024).toFixed(1)} KB`,
+    ...(rendered.outline.length > 0 ? { outline: rendered.outline } : {}),
     ...(codeExports.length > 0 ? { codeExports } : {}),
     warnings
   };

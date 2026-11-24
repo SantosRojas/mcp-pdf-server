@@ -18,10 +18,15 @@ El modelo debe producir un documento correcto a partir de datos y requisitos, no
    - `outputDir: "."` para guardar en la raíz del proyecto activo.
    - `outputDir: "reports/2026"` (o cualquier ruta relativa) para guardar en una subcarpeta del proyecto.
    - Una ruta absoluta dentro del workspace o de `PDF_MCP_ALLOWED_DIRS`.
-   La respuesta incluye `path` (absoluto) y `relativePath` (relativo al proyecto).
-7. **Localizar, componer y proteger (`list_pdfs`, `merge_pdfs`, `apply_pdf_security`):** usar `list_pdfs` para descubrir PDFs existentes en el proyecto sin adivinar rutas, y luego `merge_pdfs` o `apply_pdf_security` cuando sea necesario. Nunca incluir contraseñas en el contenido del documento.
+   La respuesta incluye `path` (absoluto), `relativePath` (relativo al proyecto), `pages`, `outline` de secciones y `warnings`.
+7. **Verificar y autocorregir maquetación (`inspect_pdf`):** llamar a `inspect_pdf` sobre el archivo generado para comprobar orientación por página, densidad de caracteres y alertas como `SPARSE_TRAILING_PAGE` (última página casi vacía con líneas huérfanas). Si aparece `SPARSE_TRAILING_PAGE` o `EMPTY_PAGE`, compactar tablas (`compact: true`), consolidar prosa en `Markdown` o eliminar `PageBreak` sobrantes y regenerar.
+8. **Localizar, componer y proteger (`list_pdfs`, `merge_pdfs`, `apply_pdf_security`):** usar `list_pdfs` para descubrir PDFs existentes en el proyecto sin adivinar rutas, y luego `merge_pdfs` o `apply_pdf_security` cuando sea necesario. Nunca incluir contraseñas en el contenido del documento.
 
 ## Reglas de eficiencia de tokens
+
+- **Usar `Markdown` para secciones de prosa extensa (ahorro de 50–70% de tokens):** un nodo `{ "type": "Markdown", "markdown": "## Análisis\n\n..." }` compila de forma determinista encabezados `#`, párrafos con `**negrita**`/`*cursiva*`/`[links](https://...)`, alertas `> [!WARNING]` / `> [!NOTE]`, citas `>`, listas anidadas y checklists `- [x]`, tablas GFM y bloques de código cercados en nodos AST nativos, sin ejecutar HTML/CSS.
+- **Filtrar `list_pdf_components` por categoría:** pedir solo la categoría necesaria (`layout`, `typography`, `data`, `technical`, `media`) omite el JSON Schema completo salvo que se indique `includeSchema: true`.
+- **Aprovechar MCP Resources y Prompts:** consultar `pdf://guide/workflow`, `pdf://examples/monthly-sales-report`, `pdf://examples/invoice` y los prompts `executive-report`, `technical-spec`, `commercial-proposal` e `invoice`.
 
 - Reutilizar un único tema global (`corporate_blue`, `modern_minimal`, `executive_dark`, `financial_classic` o `technical_docs`). No enviar colores por cada nodo salvo que exista una excepción justificada.
 - La fuente predeterminada es `Inter` (con variantes Regular 400, Italic, SemiBold 600, Bold 700 y BoldItalic 700) y `JetBrainsMono` (sin ligaduras, para copia literal) en código. Para un contraste editorial clásico, puedes combinar `theme.headingFontFamily` (p. ej. `"Times-Roman"` en títulos y `"Inter"` en cuerpo).
@@ -41,19 +46,20 @@ El modelo debe producir un documento correcto a partir de datos y requisitos, no
 
 | Necesidad | Componente recomendado |
 |---|---|
-| Portada/cabecera editorial | `DocumentHeader` |
-| Jerarquía de contenido | `SectionTitle` |
-| Párrafos y explicaciones | `Text` |
-| Advertencia o hallazgo importante | `Callout` |
-| Indicadores principales | `Grid` + `MetricCard` |
-| Datos tabulares | `DataTable` |
-| Datos de identificación | `KeyValueList` |
-| Comparación de series | `Chart` |
+| Portada ejecutiva a página completa | `CoverPage` |
+| Índice navegable automático + marcadores PDF | `TableOfContents` + `SectionTitle` |
+| Cabecera editorial en primera página | `DocumentHeader` |
+| Prosa extensa, alertas, listas y tablas rápidas | `Markdown` |
+| Párrafos individuales y avisos puntuales | `Text`, `Callout`, `Quote`, `Badge` |
+| Indicadores principales y tendencias | `Grid` (`weights` opcional) + `MetricCard` (`sparkline` opcional) |
+| Datos tabulares con estados y fila de totales | `DataTable` (`format: "badge" \| "boolean" \| "currency"`, `footerRow`) |
+| Hitos cronológicos o plan de trabajo | `Timeline` |
+| Listas jerárquicas o checklists | `BulletList` (`variant: "check"`, `children`) |
+| Comparación de series y participaciones | `Chart` (`bar`, `horizontalBar`, `line`, `pie`, `doughnut`) |
 | Procesos, estados o topologías | `Flowchart` |
-| Código SQL, Python o JSON | `CodeBlock` |
-| Totales de factura/orden | `InvoiceSummary` |
-| Firmas de aprobación visuales | `SignatureBlock` |
-| Anexos o secciones nuevas | `PageBreak` |
+| Código resaltado (24 lenguajes) | `CodeBlock` |
+| Totales de factura y firmas formales | `InvoiceSummary`, `SignatureBlock` |
+| Anexos apaisados en el mismo documento | `Section` (`orientation: "landscape"`) |
 
 ## Plantilla compacta de informe
 

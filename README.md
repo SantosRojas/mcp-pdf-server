@@ -4,12 +4,12 @@ Servidor MCP empresarial para crear, validar, combinar y proteger documentos PDF
 
 ## Qué incluye
 
-- **7 herramientas MCP pensadas para agentes de IA:** `get_pdf_server_info`, `list_pdf_components`, `validate_pdf_ast`, `generate_pdf`, `list_pdfs`, `merge_pdfs` y `apply_pdf_security`.
+- **8 herramientas MCP con anotaciones (`readOnlyHint`), Resources y Prompts para agentes de IA:** `get_pdf_server_info`, `list_pdf_components`, `validate_pdf_ast`, `generate_pdf`, `inspect_pdf`, `list_pdfs`, `merge_pdfs` y `apply_pdf_security`, además de recursos `pdf://guide/workflow`, `pdf://examples/*` y prompts `executive-report`, `technical-spec`, `commercial-proposal` e `invoice`.
 - **Multiplataforma (Windows, macOS y Linux):** normalización de separadores (`/` y `\`), expansión de `~`, resolución canónica de symlinks (`/tmp` → `/private/tmp` en macOS, rutas 8.3 en Windows), escritura atómica con fallback para sistemas de archivos sin hard links, flags CLI multiplataforma (`--transport=http`, `--output-dir`, `--allow-dir`, `--allow-any-path`) y autodetección de `qpdf` en Windows (Program Files/Scoop/Chocolatey), macOS (Homebrew/MacPorts) y Linux (`/usr/bin`, `/usr/local/bin`, `/snap/bin`).
 - **Localización flexible en el proyecto activo:** soporta la capacidad **`roots` del protocolo MCP** (`roots/list` y `notifications/roots/list_changed`) además de `process.cwd()`, permitiendo guardar PDFs en cualquier carpeta del proyecto donde se esté usando el MCP (`outputDir: "."`, `"reports/2026"`, rutas absolutas dentro del proyecto o directorios adicionales en `PDF_MCP_ALLOWED_DIRS`).
 - **Motor basado en React PDF:** `@react-pdf/renderer` con salida vectorial, paginación, sistema de tokens de diseño (`src/engine/design.ts`) y tipografía editorial con **Inter** (400/600/700 + cursivas) y **JetBrains Mono** (con ligaduras desactivadas para copia literal de código) activadas por defecto.
 - **AST estricto:** Zod 4 (strict objects), límites de tamaño, tipos y validaciones de contenido; esquema JSON Schema generado desde el propio contrato; no existe `eval`, scripting, HTML o CSS arbitrario.
-- **20 componentes de dominio:** layout, encabezados, texto enriquecido, callouts, tablas, KPIs, gráficos con escala y grilla en eje Y, diagramas de flujo vectoriales, código resaltado con modos claro/oscuro de alto contraste, imágenes, QR, firmas, resumen de factura y listas.
+- **27 componentes de dominio y compilador Markdown determinista:** `CoverPage`, `TableOfContents` (con marcadores outline PDF), `Section` multi-orientación (`portrait`/`landscape`), `Markdown`, `Grid` con `weights`, `DocumentHeader`, `SectionTitle` jerárquico (`1.1.1`), `Text` con enlaces e inline markup, `Callout`, `Quote`, `Badge`, `Timeline`, `BulletList` anidado/checklists vectoriales, `DataTable` con badges/booleanos y `footerRow`, `MetricCard` con `sparkline`, `Chart` (`bar`, `horizontalBar`, `line`, `pie`, `doughnut`), `Flowchart`, `CodeBlock` en 24 lenguajes, `Image` (preservación JPEG + caché SHA-256), `QRCode`, `SignatureBlock` e `InvoiceSummary`.
 - **Temas predefinidos y combinación tipográfica:** `corporate_blue`, `modern_minimal`, `executive_dark`, `financial_classic` y `technical_docs`, con soporte opcional para `theme.headingFontFamily` y paletas de gráficos/callouts/diagramas derivadas dinámicamente del tema.
 - **Composición PDF:** listado, unión de documentos y edición de metadatos con `pdf-lib`.
 - **Cifrado/permisos:** qpdf AES-256 para contraseña de usuario/propietario y permisos de impresión/extracción.
@@ -225,12 +225,11 @@ Los ejemplos completos están en `examples/monthly-sales-report.json` y `example
 
 | Categoría | Componente | Uso |
 |---|---|---|
-| Layout | `PageBreak`, `View`, `Grid`, `Spacer`, `Divider` | Paginación, flex, grillas y espaciado |
-| Tipografía | `DocumentHeader`, `SectionTitle` (numeración secuencial con `autoNumber`), `Text`, `Callout`, `BulletList` | Jerarquía, texto enriquecido y avisos |
-| Datos | `DataTable` (moneda y locale configurables), `KeyValueList`, `MetricCard`, `InvoiceSummary`, `SignatureBlock` | Tablas, metadatos, KPIs, totales y firmas |
-| Visualización | `Chart`, `Flowchart` | Gráficos bar, line, pie y doughnut; diagramas de flujo con auto-layout por capas |
-| Técnico | `CodeBlock` | SQL, Python, JSON, JavaScript, TypeScript, Bash, YAML y texto |
-| Media | `Image`, `QRCode` | Imágenes normalizadas y QR |
+| Layout | `PageBreak`, `View`, `Grid` (`weights`), `Spacer`, `Divider`, `Section`, `CoverPage`, `TableOfContents`, `Flowchart` | Portadas, índices automáticos, secciones mixtas portrait/landscape, grillas proporcionales y diagramas de flujo |
+| Tipografía | `DocumentHeader`, `SectionTitle` (numeración jerárquica `1.1.1` y bookmarks), `Text`, `Markdown`, `Callout`, `Quote`, `BulletList` (`check` y anidado), `Badge` | Jerarquía, prosa Markdown compacta, enlaces, citas, checklists vectoriales y chips de estado |
+| Datos | `DataTable` (`badge`, `boolean`, `footerRow`), `KeyValueList`, `MetricCard` (`sparkline`), `Chart` (`bar`, `horizontalBar`, `line`, `pie`, `doughnut`), `Timeline`, `InvoiceSummary`, `SignatureBlock` | Tablas con fila de totales, KPIs con sparklines, gráficos horizontales/radiales, cronogramas, totales y firmas |
+| Técnico | `CodeBlock` | 24 lenguajes (SQL, Python, JSON, JS/TS, Go, Rust, Java, C#, C++, HTML/CSS, Dockerfile, GraphQL, Bash, YAML, etc.) |
+| Media | `Image`, `QRCode` | Imágenes validadas (preservación JPEG + caché LRU) y QR |
 
 Cada `SectionTitle` admite `autoNumber: true` para numerar secuencialmente los títulos que no tengan un `number` explícito. Para descubrir las propiedades exactas consulta `list_pdf_components`; el JSON Schema generado se devuelve junto al catálogo.
 

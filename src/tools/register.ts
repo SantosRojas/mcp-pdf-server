@@ -6,12 +6,14 @@ import { getWorkspace } from '../runtime/workspace.js';
 import { listPdfComponents } from './listComponents.js';
 import { validateAst } from './validateAst.js';
 import { generatePdf } from './generatePdf.js';
+import { inspectPdfDocument } from './inspectPdf.js';
 import { mergePdfs } from './mergePdfs.js';
 import { applyPdfSecurity } from './securityPdf.js';
 import { getServerInfo } from './serverInfo.js';
 import { listPdfs } from './listPdfs.js';
 import {
   generatePdfInputSchema,
+  inspectPdfInputSchema,
   listPdfsInputSchema,
   mergePdfsInputSchema,
   securityPdfInputSchema,
@@ -44,12 +46,21 @@ class Semaphore {
 
 const renderSemaphore = new Semaphore(config.maxConcurrentRenders);
 
+const READ_ONLY_ANNOTATIONS = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false
+} as const;
+
 export function registerPdfTools(server: McpServer): void {
   server.registerTool(
     'get_pdf_server_info',
     {
+      title: 'Información del servidor PDF y workspace',
       description: 'Devuelve la versión del servidor, los workspace roots detectados, la carpeta de salida por defecto, las carpetas permitidas, las fuentes instaladas, los temas disponibles y el flujo recomendado. Llamar una vez al iniciar para saber exactamente dónde se guardarán los PDFs.',
-      inputSchema: serverInfoInputSchema
+      inputSchema: serverInfoInputSchema,
+      annotations: READ_ONLY_ANNOTATIONS
     },
     async () => {
       try { return ok(await getServerInfo(await getWorkspace(server))); }
@@ -60,11 +71,13 @@ export function registerPdfTools(server: McpServer): void {
   server.registerTool(
     'list_pdf_components',
     {
-      description: 'Lista el catálogo de componentes PDF, sus categorías, propiedades requeridas/opcionales, ejemplos y esquema JSON. Consulta esta herramienta antes de construir el AST.',
+      title: 'Catálogo de componentes PDF',
+      description: 'Lista el catálogo de 27 componentes PDF, sus categorías, propiedades requeridas/opcionales y ejemplos. Al filtrar por una categoría específica omite el JSON Schema completo para ahorrar tokens salvo que includeSchema=true.',
       inputSchema: z.object({
         category: z.enum(['layout', 'data', 'technical', 'media', 'typography', 'all']).optional(),
         includeSchema: z.boolean().optional()
-      }).strict()
+      }).strict(),
+      annotations: READ_ONLY_ANNOTATIONS
     },
     async ({ category, includeSchema }) => {
       try {
@@ -82,8 +95,10 @@ export function registerPdfTools(server: McpServer): void {
   server.registerTool(
     'validate_pdf_ast',
     {
-      description: 'Valida el documento AST sin renderizar. Devuelve errores con path exacto y advertencias para autocorrección del agente. No escribe archivos.',
-      inputSchema: validatePdfAstInputSchema
+      title: 'Validar AST PDF sin renderizar',
+      description: 'Valida el documento AST sin renderizar. Devuelve errores con path exacto y advertencias semánticas (totales de factura, límites de imágenes/QR, activos ausentes, pesos de Grid) para autocorrección del agente.',
+      inputSchema: validatePdfAstInputSchema,
+      annotations: READ_ONLY_ANNOTATIONS
     },
     async (input) => {
       try {
@@ -96,8 +111,15 @@ export function registerPdfTools(server: McpServer): void {
   server.registerTool(
     'generate_pdf',
     {
-      description: 'Genera un PDF profesional a partir de un AST JSON declarativo y lo guarda en disco. Sin outputDir usa la carpeta de salida del workspace; outputDir acepta rutas relativas al workspace (p. ej. "reports/2026") o absolutas dentro de las carpetas permitidas. Devuelve path absoluto, relativePath, páginas, tamaño y warnings. No acepta HTML, CSS, JavaScript ni código ejecutable.',
-      inputSchema: generatePdfInputSchema
+      title: 'Generar documento PDF profesional',
+      description: 'Genera un PDF profesional a partir de un AST JSON declarativo (incluyendo CoverPage, TableOfContents, Markdown, DataTable, Chart, Flowchart y Section) y lo guarda en disco. Devuelve path absoluto, relativePath, páginas, outline de secciones, tamaño y warnings.',
+      inputSchema: generatePdfInputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: config.allowRemoteImages
+      }
     },
     async (input) => {
       try {
@@ -108,10 +130,28 @@ export function registerPdfTools(server: McpServer): void {
   );
 
   server.registerTool(
+    'inspect_pdf',
+    {
+      title: 'Inspeccionar estructura y paginación de un PDF',
+      description: 'Analiza un PDF existente y devuelve metadatos, dimensiones/orientación por página, densidad de texto, vista previa de contenido y alertas de maquetación (como SPARSE_TRAILING_PAGE cuando la última página quedó casi vacía) para autocorrección del agente.',
+      inputSchema: inspectPdfInputSchema,
+      annotations: READ_ONLY_ANNOTATIONS
+    },
+    async (input) => {
+      try {
+        const workspace = await getWorkspace(server);
+        return ok(await inspectPdfDocument(inspectPdfInputSchema.parse(input), workspace));
+      } catch (error) { return fail(error); }
+    }
+  );
+
+  server.registerTool(
     'list_pdfs',
     {
-      description: 'Lista los PDFs existentes en el workspace, la carpeta de salida y las carpetas permitidas, con ruta absoluta, ruta relativa, tamaño y fecha. Úsala para localizar documentos antes de merge_pdfs o apply_pdf_security en lugar de adivinar rutas.',
-      inputSchema: listPdfsInputSchema
+      title: 'Listar PDFs del workspace',
+      description: 'Lista los PDFs existentes en el workspace, la carpeta de salida y las carpetas permitidas, con ruta absoluta, ruta relativa, tamaño y fecha.',
+      inputSchema: listPdfsInputSchema,
+      annotations: READ_ONLY_ANNOTATIONS
     },
     async (input) => {
       try {
@@ -124,8 +164,15 @@ export function registerPdfTools(server: McpServer): void {
   server.registerTool(
     'merge_pdfs',
     {
-      description: 'Combina dos o más PDFs existentes en un documento nuevo, manteniendo el orden recibido. Acepta rutas absolutas permitidas o relativas al workspace, a la carpeta de salida o a las carpetas permitidas. Usa list_pdfs si no conoces las rutas.',
-      inputSchema: mergePdfsInputSchema
+      title: 'Combinar múltiples PDFs',
+      description: 'Combina dos o más PDFs existentes en un documento nuevo manteniendo el orden recibido.',
+      inputSchema: mergePdfsInputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
     },
     async (input) => {
       try {
@@ -138,8 +185,15 @@ export function registerPdfTools(server: McpServer): void {
   server.registerTool(
     'apply_pdf_security',
     {
-      description: 'Actualiza metadatos y opcionalmente cifra el PDF con AES-256 y restricciones de impresión/copia. Acepta filePath absoluto permitido o relativo al workspace/output, y un outputDir opcional con las mismas reglas que generate_pdf. El cifrado requiere qpdf instalado.',
-      inputSchema: securityPdfToolInputSchema
+      title: 'Aplicar metadatos y cifrado AES-256',
+      description: 'Actualiza metadatos y opcionalmente cifra el PDF con AES-256 y restricciones de impresión/copia vía qpdf.',
+      inputSchema: securityPdfToolInputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
     },
     async (input) => {
       try {
