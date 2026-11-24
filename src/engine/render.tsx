@@ -12,7 +12,7 @@ import { CODE_LINE_HEIGHT, codeGutterWidth, computeCodeMetrics, normalizeCodeLin
 import { splitInlineMarkup } from './inlineMarkup.js';
 import { computeFlowchartLayout, flowchartMetrics, type ArrowDirection, type FlowchartKind, type PositionedFlowchartNode, type RoutedFlowchartEdge } from './flowchartLayout.js';
 import { registerOptionalFonts, resolveTheme, type ThemeTokens } from './themeProvider.js';
-import { LINE_HEIGHT, RADIUS, SPACE, TRACKING, TYPE, metricValueSize, withAlpha } from './design.js';
+import { LINE_HEIGHT, RADIUS, SPACE, TRACKING, TYPE, metricValueSize, mix, withAlpha } from './design.js';
 import { prepareImages } from './imageProcessor.js';
 import type { ComponentNode, GeneratePdfInput } from '../schemas/ast.js';
 import { AppError } from '../utils/errors.js';
@@ -24,6 +24,8 @@ export interface UiStrings {
   tax: string;
   discount: string;
   total: string;
+  boolYes: string;
+  boolNo: string;
   missingLogo: string;
   missingImage: string;
   missingQr: string;
@@ -38,6 +40,8 @@ export function resolveUiStrings(locale = 'es-PE'): UiStrings {
       tax: 'Tax',
       discount: 'Discount',
       total: 'TOTAL',
+      boolYes: 'Yes',
+      boolNo: 'No',
       missingLogo: '[Logo unavailable]',
       missingImage: '[Image unavailable]',
       missingQr: '[QR unavailable]'
@@ -49,10 +53,33 @@ export function resolveUiStrings(locale = 'es-PE'): UiStrings {
     tax: 'Impuestos',
     discount: 'Descuento',
     total: 'TOTAL',
+    boolYes: 'Sí',
+    boolNo: 'No',
     missingLogo: '[Logo no disponible]',
     missingImage: '[Imagen no disponible]',
     missingQr: '[QR no disponible]'
   };
+}
+
+type BadgeTone = 'neutral' | 'info' | 'success' | 'warning' | 'danger';
+
+function badgeColors(tone: BadgeTone): { bg: string; border: string; fg: string } {
+  switch (tone) {
+    case 'success': return { bg: '#ECFDF5', border: '#6EE7B7', fg: '#065F46' };
+    case 'warning': return { bg: '#FFFBEB', border: '#FCD34D', fg: '#92400E' };
+    case 'danger': return { bg: '#FEF2F2', border: '#FCA5A5', fg: '#991B1B' };
+    case 'info': return { bg: '#EFF6FF', border: '#93C5FD', fg: '#1E40AF' };
+    default: return { bg: '#F1F5F9', border: '#CBD5E1', fg: '#334155' };
+  }
+}
+
+function inferBadgeTone(raw: string): BadgeTone {
+  const key = raw.trim().toLowerCase();
+  if (/^(ok|active|activo|done|completado|paid|pagado|success|aprobado|verified|healthy|ready|pass|passed|met)/.test(key)) return 'success';
+  if (/^(warn|warning|pending|pendiente|riesgo|risk|review|degraded|hold|medium)/.test(key)) return 'warning';
+  if (/^(err|error|fail|failed|danger|critical|critico|crítico|overdue|vencido|rejected|rechazado|blocked|bloqueado|high)/.test(key)) return 'danger';
+  if (/^(info|new|nuevo|draft|borrador|in[ _-]?progress|en[ _-]?curso|open|low)/.test(key)) return 'info';
+  return 'neutral';
 }
 
 export function resolveChildWidths(parentWidth: number, columns: number, gap: number, weights?: readonly number[]): number[] {
@@ -132,6 +159,13 @@ function formatMoney(value: number, currency: string, locale = 'es-PE'): string 
 
 export function formatCell(value: unknown, format: string, currency = 'PEN', locale = 'es-PE'): string {
   if (value === null || value === undefined) return '-';
+  if (format === 'boolean') {
+    if (typeof value === 'boolean') {
+      const ui = resolveUiStrings(locale);
+      return value ? ui.boolYes : ui.boolNo;
+    }
+    return String(value);
+  }
   if (format === 'currency' && typeof value === 'number') return formatMoney(value, currency, locale);
   if (format === 'number' && typeof value === 'number') return formatNumber(value, locale);
   if (format === 'percent' && typeof value === 'number') return `${formatNumber(value, locale)}%`;
@@ -480,6 +514,82 @@ function estimateWrappedLines(text: string, widthPt: number, fontSize: number): 
   return text.split(/\r?\n/).reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / charsPerLine)), 0);
 }
 
+function SparklineGraphic({ values, width, accent }: { values: readonly number[]; width: number; accent: string }): React.ReactElement {
+  const w = Math.max(60, Math.round(width));
+  const h = 26;
+  const pad = 3;
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  const range = maxVal - minVal || 1;
+  const points = values.map((v, i) => {
+    const x = pad + (values.length <= 1 ? (w - pad * 2) / 2 : (i / (values.length - 1)) * (w - pad * 2));
+    const y = pad + (h - pad * 2) - ((v - minVal) / range) * (h - pad * 2);
+    return [x, y] as const;
+  });
+  const linePath = points.map(([x, y], idx) => `${idx === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`).join(' ');
+  const first = points[0]!;
+  const last = points[points.length - 1]!;
+  const areaPath = `${linePath} L ${last[0].toFixed(1)} ${(h - pad).toFixed(1)} L ${first[0].toFixed(1)} ${(h - pad).toFixed(1)} Z`;
+  const areaFill = mix(accent, '#FFFFFF', 0.88);
+  return (
+    <Svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ marginTop: SPACE.xs }}>
+      <Path d={areaPath} fill={areaFill} />
+      <Path d={linePath} stroke={accent} strokeWidth={1.6} fill="none" />
+      <Circle cx={last[0]} cy={last[1]} r={2.4} fill={accent} />
+    </Svg>
+  );
+}
+
+function renderBulletItems(
+  items: readonly any[],
+  context: RenderContext,
+  options: { variant?: 'bullet' | 'ordered' | 'check'; ordered?: boolean; depth: number }
+): React.ReactNode {
+  const t = context.theme;
+  const mode = options.variant ?? (options.ordered ? 'ordered' : 'bullet');
+  return items.map((rawItem: any, index: number) => {
+    const isObj = typeof rawItem === 'object' && rawItem !== null;
+    const text = isObj ? String(rawItem.text ?? '') : String(rawItem ?? '');
+    const checked = isObj ? Boolean(rawItem.checked) : false;
+    const children: any[] | undefined = isObj && Array.isArray(rawItem.children) ? rawItem.children : undefined;
+    const indent = options.depth * 12;
+    const itemLines = estimateWrappedLines(text, context.contentWidth - 20 - indent, TYPE.small + 0.5);
+    const wrapItem = itemLines * ((TYPE.small + 0.5) * LINE_HEIGHT.relaxed) > context.contentHeight * 0.65;
+    const useCheck = mode === 'check' || (isObj && typeof rawItem.checked === 'boolean');
+    const marker = useCheck ? (
+      <View style={{ width: 12, paddingTop: 2 }}>
+        <Svg width={9} height={9} viewBox="0 0 10 10">
+          <Rect x={0.8} y={0.8} width={8.4} height={8.4} rx={1.8} fill={checked ? t.accent : '#FFFFFF'} stroke={checked ? t.accent : '#94A3B8'} strokeWidth={1} />
+          {checked ? <Path d="M 2.5 5.2 L 4.3 7.0 L 7.6 3.1" stroke="#FFFFFF" strokeWidth={1.4} fill="none" /> : null}
+        </Svg>
+      </View>
+    ) : (
+      <PdfText style={{ color: t.accent, fontSize: TYPE.small + 0.5, minWidth: 12, fontFamily: t.font }}>
+        {mode === 'ordered' ? `${index + 1}.` : options.depth > 0 ? '◦' : '•'}
+      </PdfText>
+    );
+    return (
+      <View key={index} style={{ marginLeft: indent, marginBottom: SPACE.xs + 1 }}>
+        <View wrap={wrapItem} style={{ flexDirection: 'row', gap: SPACE.md }}>
+          {marker}
+          <PdfText style={{ color: t.text, fontSize: TYPE.small + 0.5, flexGrow: 1, lineHeight: LINE_HEIGHT.relaxed, fontFamily: t.font }}>
+            {textRuns(text, t.mono, TYPE.small + 0.5, t.primary, t.accent)}
+          </PdfText>
+        </View>
+        {children && children.length > 0 ? (
+          <View style={{ marginTop: 3 }}>
+            {renderBulletItems(children, context, {
+              ...(options.variant !== undefined ? { variant: options.variant } : {}),
+              ...(options.ordered !== undefined ? { ordered: options.ordered } : {}),
+              depth: options.depth + 1
+            })}
+          </View>
+        ) : null}
+      </View>
+    );
+  });
+}
+
 function renderNode(node: ComponentNode, context: RenderContext): React.ReactNode {
   const n = node as any;
   const t = context.theme;
@@ -551,18 +661,31 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
       const totalWidth = n.columns.reduce((sum: number, col: any) => sum + (col.width ?? (100 / n.columns.length)), 0);
       const widths = n.columns.map((col: any) => `${(col.width ?? (100 / n.columns.length)) / totalWidth * 100}%`);
       const rowHeight = (n.compact ? 3 : 6) * 2 + 8 * 1.25 * 2;
-      const estimatedHeight = (n.compact ? 5 : 7) * 2 + TYPE.caption + (n.caption ? 14 : 0) + 16 + n.rows.length * rowHeight;
-      const fitsOnOnePage = n.rows.length <= 12 && estimatedHeight <= context.contentHeight;
+      const totalRows = n.rows.length + (n.footerRow ? 1 : 0);
+      const estimatedHeight = (n.compact ? 5 : 7) * 2 + TYPE.caption + (n.caption ? 14 : 0) + 16 + totalRows * rowHeight;
+      const fitsOnOnePage = totalRows <= 12 && estimatedHeight <= context.contentHeight;
+      const cellSize = n.compact ? 7 : 8;
       const header = <View fixed={!fitsOnOnePage} style={{ flexDirection: 'row', backgroundColor: t.primary, paddingVertical: n.compact ? 5 : 7, paddingHorizontal: 6, borderTopLeftRadius: RADIUS.sm, borderTopRightRadius: RADIUS.sm }}>
-        {n.columns.map((column: any, index: number) => <PdfText key={column.key} style={{ width: widths[index], color: t.onPrimary, fontSize: n.compact ? 7 : 8, fontWeight: 700, textAlign: column.align, letterSpacing: 0.25, paddingRight: 6, fontFamily: t.heading }}>{column.label}</PdfText>)}
+        {n.columns.map((column: any, index: number) => <PdfText key={column.key} style={{ width: widths[index], color: t.onPrimary, fontSize: cellSize, fontWeight: 700, textAlign: column.align, letterSpacing: 0.25, paddingRight: 6, fontFamily: t.heading }}>{column.label}</PdfText>)}
       </View>;
       return <View key={n.id} wrap={!fitsOnOnePage} style={{ marginVertical: SPACE.md }}>
         {n.caption ? <PdfText style={{ color: t.muted, fontSize: TYPE.caption, marginBottom: SPACE.xs + 1, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{n.caption}</PdfText> : null}
         {header}
-        {n.rows.map((row: Record<string, unknown>, rowIndex: number) => <View key={rowIndex} wrap={false} style={{ flexDirection: 'row', paddingVertical: n.compact ? 3 : 6, paddingHorizontal: 6, backgroundColor: n.zebra && rowIndex % 2 === 1 ? t.surface : '#FFFFFF', borderBottomWidth: 0.5, borderBottomColor: t.border }}>
+        {n.rows.map((row: Record<string, unknown>, rowIndex: number) => <View key={rowIndex} wrap={false} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: n.compact ? 3 : 6, paddingHorizontal: 6, backgroundColor: n.zebra && rowIndex % 2 === 1 ? t.surface : '#FFFFFF', borderBottomWidth: 0.5, borderBottomColor: t.border }}>
           {n.columns.map((column: any, index: number) => {
             const rawVal = row[column.key];
-            const cellSize = n.compact ? 7 : 8;
+            if (column.format === 'badge' && rawVal !== null && rawVal !== undefined && String(rawVal).trim() !== '') {
+              const label = String(rawVal);
+              const bc = badgeColors(inferBadgeTone(label));
+              const alignItems = column.align === 'right' ? 'flex-end' : column.align === 'center' ? 'center' : 'flex-start';
+              return (
+                <View key={column.key} style={{ width: widths[index], alignItems, paddingRight: 6 }}>
+                  <View style={{ backgroundColor: bc.bg, borderWidth: 0.5, borderColor: bc.border, borderRadius: RADIUS.pill, paddingHorizontal: 5, paddingVertical: 1 }}>
+                    <PdfText style={{ color: bc.fg, fontSize: Math.max(6, cellSize - 0.5), fontWeight: 700, fontFamily: t.heading }}>{label}</PdfText>
+                  </View>
+                </View>
+              );
+            }
             const formatted = formatCell(rawVal, column.format, n.currency, n.locale);
             const contentNode = column.format === 'text' && typeof rawVal === 'string'
               ? textRuns(formatted, t.mono, cellSize, t.primary, t.accent)
@@ -570,6 +693,15 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
             return <PdfText key={column.key} style={{ width: widths[index], color: t.text, fontSize: cellSize, textAlign: column.align, lineHeight: 1.25, paddingRight: 6, fontFamily: t.font }}>{contentNode}</PdfText>;
           })}
         </View>)}
+        {n.footerRow ? (
+          <View wrap={false} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: n.compact ? 4 : 6.5, paddingHorizontal: 6, backgroundColor: t.surface, borderTopWidth: 1, borderTopColor: t.primary, borderBottomWidth: 0.75, borderBottomColor: t.border }}>
+            {n.columns.map((column: any, index: number) => {
+              const rawVal = n.footerRow[column.key];
+              const display = rawVal === null || rawVal === undefined || rawVal === '' ? '' : formatCell(rawVal, column.format === 'badge' ? 'text' : column.format, n.currency, n.locale);
+              return <PdfText key={column.key} style={{ width: widths[index], color: t.primary, fontSize: cellSize, fontWeight: 700, textAlign: column.align, lineHeight: 1.25, paddingRight: 6, fontFamily: t.heading }}>{display}</PdfText>;
+            })}
+          </View>
+        ) : null}
       </View>;
     }
     case 'KeyValueList': return <View key={n.id} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.md, marginVertical: SPACE.sm }}>{n.items.map((item: any, index: number) => <View key={index} wrap={false} style={{ width: n.columns === 1 ? '100%' : '48%', paddingVertical: 5, borderBottomWidth: 0.5, borderBottomColor: t.border }}><PdfText style={{ fontSize: TYPE.micro, color: t.muted, marginBottom: 2, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{item.key}</PdfText><PdfText style={{ fontSize: TYPE.small, color: t.text, fontWeight: 600, fontFamily: t.heading }}>{typeof item.value === 'string' ? textRuns(item.value, t.mono, TYPE.small, t.primary, t.accent) : String(item.value ?? '-')}</PdfText></View>)}</View>;
@@ -580,6 +712,7 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
         <PdfText style={{ color: t.muted, fontSize: TYPE.caption, letterSpacing: TRACKING.wide, fontFamily: t.font }}>{n.label}</PdfText>
         <PdfText style={{ color: t.primary, fontSize: metricValueSize(value), fontWeight: 700, marginTop: SPACE.xs, lineHeight: LINE_HEIGHT.tight, fontFamily: t.heading }}>{value}</PdfText>
         {n.trend ? <View style={{ alignSelf: 'flex-start', marginTop: SPACE.xs, backgroundColor: withAlpha(trendColor, 0.12), borderRadius: RADIUS.pill, paddingHorizontal: 5, paddingVertical: 1.5 }}><PdfText style={{ color: trendColor, fontSize: TYPE.micro, fontWeight: 600, fontFamily: t.font }}>{n.trend}</PdfText></View> : null}
+        {Array.isArray(n.sparkline) && n.sparkline.length >= 2 ? <SparklineGraphic values={n.sparkline} width={Math.max(70, context.contentWidth - 22)} accent={t.accent} /> : null}
         {n.description ? <PdfText style={{ color: t.muted, fontSize: TYPE.tiny, marginTop: SPACE.xs, lineHeight: LINE_HEIGHT.normal, fontFamily: t.font }}>{n.description}</PdfText> : null}
       </View>;
     }
@@ -633,11 +766,65 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
       <View style={{ borderTopWidth: 1, borderTopColor: t.border, paddingTop: SPACE.sm, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end' }}><PdfText style={{ fontSize: TYPE.small, color: t.primary, fontWeight: 700, letterSpacing: TRACKING.caps, fontFamily: t.heading }}>{context.ui.total}</PdfText><PdfText style={{ fontSize: TYPE.h2, color: t.primary, fontWeight: 700, fontFamily: t.heading }}>{formatMoney(n.total, n.currency, n.locale)}</PdfText></View>
       {n.notes ? <PdfText style={{ fontSize: TYPE.tiny, color: t.muted, marginTop: SPACE.sm, fontFamily: t.font }}>{textRuns(n.notes, t.mono, TYPE.tiny, t.primary, t.accent)}</PdfText> : null}
     </View>;
-    case 'BulletList': return <View key={n.id} style={{ marginVertical: SPACE.sm }}>{n.items.map((item: string, index: number) => {
-      const itemLines = estimateWrappedLines(item, context.contentWidth - 20, TYPE.small + 0.5);
-      const wrapItem = itemLines * ((TYPE.small + 0.5) * LINE_HEIGHT.relaxed) > context.contentHeight * 0.65;
-      return <View key={index} wrap={wrapItem} style={{ flexDirection: 'row', gap: SPACE.md, marginBottom: SPACE.xs + 1 }}><PdfText style={{ color: t.accent, fontSize: TYPE.small + 0.5, minWidth: 12, fontFamily: t.font }}>{n.ordered ? `${index + 1}.` : '•'}</PdfText><PdfText style={{ color: t.text, fontSize: TYPE.small + 0.5, flexGrow: 1, lineHeight: LINE_HEIGHT.relaxed, fontFamily: t.font }}>{textRuns(item, t.mono, TYPE.small + 0.5, t.primary, t.accent)}</PdfText></View>;
-    })}</View>;
+    case 'BulletList': return <View key={n.id} style={{ marginVertical: SPACE.sm }}>{renderBulletItems(n.items, context, { variant: n.variant, ordered: n.ordered, depth: 0 })}</View>;
+    case 'Badge': {
+      const bc = badgeColors((n.tone ?? 'neutral') as BadgeTone);
+      const alignSelf = n.align === 'right' ? 'flex-end' : n.align === 'center' ? 'center' : 'flex-start';
+      return (
+        <View key={n.id} wrap={false} style={{ alignSelf, backgroundColor: bc.bg, borderWidth: 0.75, borderColor: bc.border, borderRadius: RADIUS.pill, paddingHorizontal: 7, paddingVertical: 2.5, marginVertical: SPACE.xs }}>
+          <PdfText style={{ color: bc.fg, fontSize: TYPE.micro, fontWeight: 700, letterSpacing: TRACKING.wide, fontFamily: t.heading }}>{n.text}</PdfText>
+        </View>
+      );
+    }
+    case 'Timeline': return (
+      <View key={n.id} style={{ marginVertical: SPACE.md }}>
+        {n.title ? <PdfText style={{ color: t.primary, fontSize: TYPE.small + 0.5, fontWeight: 600, marginBottom: SPACE.sm, letterSpacing: TRACKING.heading, fontFamily: t.heading }}>{n.title}</PdfText> : null}
+        {n.items.map((item: any, index: number) => {
+          const isLast = index === n.items.length - 1;
+          const status = item.status ?? 'done';
+          const markerColor = status === 'done' ? t.accent : status === 'active' ? t.primary : '#CBD5E1';
+          return (
+            <View key={index} wrap={false} style={{ flexDirection: 'row', gap: SPACE.md }}>
+              <View style={{ width: 16, alignItems: 'center' }}>
+                <Svg width={12} height={12} viewBox="0 0 12 12">
+                  {status === 'done' ? (
+                    <React.Fragment>
+                      <Circle cx={6} cy={6} r={5} fill={markerColor} />
+                      <Path d="M 3.6 6.1 L 5.2 7.7 L 8.5 4.2" stroke="#FFFFFF" strokeWidth={1.3} fill="none" />
+                    </React.Fragment>
+                  ) : status === 'active' ? (
+                    <React.Fragment>
+                      <Circle cx={6} cy={6} r={5} fill="#FFFFFF" stroke={markerColor} strokeWidth={1.5} />
+                      <Circle cx={6} cy={6} r={2.3} fill={markerColor} />
+                    </React.Fragment>
+                  ) : (
+                    <Circle cx={6} cy={6} r={4.5} fill="#FFFFFF" stroke={markerColor} strokeWidth={1.2} />
+                  )}
+                </Svg>
+                {!isLast ? <View style={{ width: 1.2, flexGrow: 1, minHeight: 14, backgroundColor: '#E2E8F0', marginVertical: 2 }} /> : null}
+              </View>
+              <View style={{ flexGrow: 1, flexShrink: 1, paddingBottom: isLast ? 2 : SPACE.md }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: SPACE.sm }}>
+                  <PdfText style={{ color: t.text, fontSize: TYPE.small, fontWeight: 700, fontFamily: t.heading }}>{item.title}</PdfText>
+                  {item.date ? <View style={{ backgroundColor: t.surface, borderRadius: RADIUS.pill, paddingHorizontal: 5, paddingVertical: 1 }}><PdfText style={{ color: t.muted, fontSize: TYPE.tiny, fontFamily: t.font }}>{item.date}</PdfText></View> : null}
+                </View>
+                {item.description ? <PdfText style={{ color: t.muted, fontSize: TYPE.caption + 0.5, marginTop: 2, lineHeight: LINE_HEIGHT.normal, fontFamily: t.font }}>{textRuns(item.description, t.mono, TYPE.caption + 0.5, t.primary, t.accent)}</PdfText> : null}
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    );
+    case 'Quote': return (
+      <View key={n.id} wrap={false} style={{ backgroundColor: t.surface, borderLeftWidth: 3, borderLeftColor: t.accent, paddingVertical: SPACE.md, paddingHorizontal: SPACE.lg, marginVertical: SPACE.sm, borderRadius: RADIUS.sm }}>
+        <PdfText style={{ color: t.text, fontSize: TYPE.small + 0.5, fontStyle: 'italic', lineHeight: LINE_HEIGHT.relaxed, fontFamily: t.font }}>{textRuns(n.text, t.mono, TYPE.small + 0.5, t.primary, t.accent)}</PdfText>
+        {n.author || n.role ? (
+          <PdfText style={{ color: t.muted, fontSize: TYPE.caption, marginTop: SPACE.xs + 1, fontWeight: 600, fontFamily: t.heading }}>
+            {`— ${[n.author, n.role].filter(Boolean).join(', ')}`}
+          </PdfText>
+        ) : null}
+      </View>
+    );
     case 'Flowchart': return <View key={n.id} wrap={false} style={{ marginVertical: SPACE.md }}>
       {n.title ? <PdfText style={{ fontSize: TYPE.small + 0.5, fontWeight: 600, color: t.primary, marginBottom: SPACE.sm, textAlign: n.titleAlign, letterSpacing: TRACKING.heading, fontFamily: t.heading }}>{n.title}</PdfText> : null}
       <View style={{ alignItems: 'center' }}><FlowchartGraphic node={n} context={context} /></View>

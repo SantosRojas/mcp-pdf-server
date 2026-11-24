@@ -46,15 +46,26 @@ const textNode = z.object({
   lineHeight: z.number().min(0.8).max(3).default(1.35), marginBottom: z.number().min(0).max(100).default(6)
 }).strict();
 const calloutNode = z.object({ type: z.literal('Callout'), ...common, variant: z.enum(['info', 'warning', 'success', 'danger']).default('info'), title: z.string().max(200).optional(), content: safeText, icon: z.string().max(8).optional() }).strict();
+const badgeToneSchema = z.enum(['neutral', 'info', 'success', 'warning', 'danger']);
+
 const dataTableNode = z.object({
   type: z.literal('DataTable'), ...common,
-  columns: z.array(z.object({ key: z.string().min(1).max(100), label: z.string().min(1).max(100), width: z.number().min(1).max(100).optional(), align: z.enum(['left', 'center', 'right']).default('left'), format: z.enum(['text', 'currency', 'number', 'date', 'percent']).default('text') }).strict()).min(1).max(20),
+  columns: z.array(z.object({ key: z.string().min(1).max(100), label: z.string().min(1).max(100), width: z.number().min(1).max(100).optional(), align: z.enum(['left', 'center', 'right']).default('left'), format: z.enum(['text', 'currency', 'number', 'date', 'percent', 'badge', 'boolean']).default('text') }).strict()).min(1).max(20),
   rows: z.array(z.record(z.string(), scalar)).max(3_000),
+  footerRow: z.record(z.string(), scalar).optional(),
   caption: z.string().max(300).optional(), zebra: z.boolean().default(true), compact: z.boolean().default(false),
   currency: z.string().regex(/^[A-Z]{3}$/).default('PEN'), locale: z.string().min(2).max(40).default('es-PE')
 }).strict();
 const keyValueListNode = z.object({ type: z.literal('KeyValueList'), ...common, items: z.array(z.object({ key: z.string().min(1).max(150), value: scalar }).strict()).max(100), columns: z.union([z.literal(1), z.literal(2)]).default(2) }).strict();
-const metricCardNode = z.object({ type: z.literal('MetricCard'), ...common, label: z.string().min(1).max(100), value: scalar, trend: z.string().max(30).optional(), trendColor: color.optional(), description: z.string().max(200).optional() }).strict();
+const metricCardNode = z.object({
+  type: z.literal('MetricCard'), ...common,
+  label: z.string().min(1).max(100),
+  value: scalar,
+  trend: z.string().max(30).optional(),
+  trendColor: color.optional(),
+  description: z.string().max(200).optional(),
+  sparkline: z.array(chartValue).min(2).max(60).optional()
+}).strict();
 const chartNode = z.object({
   type: z.literal('Chart'), ...common,
   chartType: z.enum(['bar', 'horizontalBar', 'line', 'pie', 'doughnut']),
@@ -84,7 +95,47 @@ const invoiceSummaryNode = z.object({
   type: z.literal('InvoiceSummary'), ...common,
   currency: z.string().regex(/^[A-Z]{3}$/).default('PEN'), locale: z.string().min(2).max(40).default('es-PE'), subtotal: z.number().finite(), tax: z.number().finite().default(0), discount: z.number().finite().default(0), total: z.number().finite(), notes: z.string().max(500).optional()
 }).strict();
-const bulletListNode = z.object({ type: z.literal('BulletList'), ...common, items: z.array(z.string().max(2_000)).min(1).max(100), ordered: z.boolean().default(false) }).strict();
+type BulletItemInput = string | { text: string; checked?: boolean | undefined; children?: BulletItemInput[] | undefined };
+const bulletItemSchema: z.ZodType<BulletItemInput> = z.lazy(() => z.union([
+  z.string().max(2_000),
+  z.object({
+    text: z.string().max(2_000),
+    checked: z.boolean().optional(),
+    children: z.array(bulletItemSchema).max(50).optional()
+  }).strict()
+]));
+
+const bulletListNode = z.object({
+  type: z.literal('BulletList'), ...common,
+  items: z.array(bulletItemSchema).min(1).max(100),
+  ordered: z.boolean().default(false),
+  variant: z.enum(['bullet', 'ordered', 'check']).optional()
+}).strict();
+
+const badgeNode = z.object({
+  type: z.literal('Badge'), ...common,
+  text: z.string().min(1).max(100),
+  tone: badgeToneSchema.default('neutral'),
+  align: z.enum(['left', 'center', 'right']).default('left')
+}).strict();
+
+const timelineNode = z.object({
+  type: z.literal('Timeline'), ...common,
+  title: z.string().max(200).optional(),
+  items: z.array(z.object({
+    date: z.string().max(60).optional(),
+    title: z.string().min(1).max(200),
+    description: z.string().max(600).optional(),
+    status: z.enum(['done', 'active', 'pending']).default('done')
+  }).strict()).min(1).max(40)
+}).strict();
+
+const quoteNode = z.object({
+  type: z.literal('Quote'), ...common,
+  text: safeText,
+  author: z.string().max(150).optional(),
+  role: z.string().max(150).optional()
+}).strict();
 const flowchartNode = z.object({
   type: z.literal('Flowchart'), ...common,
   title: z.string().max(200).optional(),
@@ -111,7 +162,8 @@ export const componentNodeSchema = z.lazy(() => z.discriminatedUnion('type', [
   pageBreakNode, viewNode, gridNode, spacerNode, dividerNode, documentHeaderNode,
   sectionTitleNode, textNode, calloutNode, dataTableNode, keyValueListNode,
   metricCardNode, chartNode, codeBlockNode, imageNode, qrCodeNode,
-  signatureBlockNode, invoiceSummaryNode, bulletListNode, flowchartNode
+  signatureBlockNode, invoiceSummaryNode, bulletListNode, flowchartNode,
+  badgeNode, timelineNode, quoteNode
 ]));
 
 export const settingsSchema = z.object({
