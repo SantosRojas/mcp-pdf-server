@@ -1,14 +1,18 @@
 # Fuentes tipográficas
 
-El servidor funciona sin archivos de fuentes, usando Helvetica/Courier/Times-Roman integradas en PDF. Además, este workspace incluye dos familias libres para lograr una salida más cuidada:
+El servidor funciona sin archivos externos gracias a las fuentes base de PDF (`Helvetica`, `Courier`, `Times-Roman`), pero **incluye por defecto** dos familias libres bajo SIL Open Font License en `assets/fonts`:
 
-- **Inter** — texto corrido y títulos (`Inter-Regular.ttf`, `Inter-Italic.ttf`, `Inter-SemiBold.ttf`, `Inter-Bold.ttf`, `Inter-BoldItalic.ttf`). Licencia SIL OFL en `Inter-LICENSE.txt`.
-- **JetBrains Mono** — bloques de código y `código inline` (`JetBrainsMono-Regular.ttf`, `JetBrainsMono-Italic.ttf`, `JetBrainsMono-Bold.ttf`). Licencia SIL OFL en `JetBrainsMono-OFL.txt`.
+- **Inter** — fuente predeterminada (`theme.fontFamily: "Inter"`) para cuerpo, subtítulos, tablas y encabezados (`Inter-Regular.ttf`, `Inter-Italic.ttf`, `Inter-SemiBold.ttf`, `Inter-Bold.ttf`, `Inter-BoldItalic.ttf`). Licencia en `Inter-LICENSE.txt`.
+- **JetBrains Mono** — fuente monoespaciada predeterminada para `CodeBlock` y `` `código inline` `` (`JetBrainsMono-Regular.ttf`, `JetBrainsMono-Italic.ttf`, `JetBrainsMono-Bold.ttf`). El motor desactiva las ligaduras OpenType (`calt`, `liga`, `clig`, `dlig`, `rlig`) en cada bloque de código para que operadores como `<=`, `<>`, `>=`, `!=` y `=>` se copien siempre como caracteres ASCII literales. Licencia en `JetBrainsMono-OFL.txt`.
 
-Se pueden añadir más familias (`Roboto-*.ttf`) en este directorio o en la ruta indicada por `PDF_MCP_FONT_DIR`.
+## Combinación de fuentes (`headingFontFamily`) y pesos
 
-Todas las caras son opcionales: se registra la familia si existe al menos `*-Regular.ttf`, y cada variante (cursiva, semibold, negrita) se activa solo si su archivo está presente. Si falta una cara no se inventa un estilo sintético: se usa la más cercana de la propia familia.
+- `theme.fontFamily` define la fuente de lectura (`Inter` por defecto).
+- `theme.headingFontFamily` permite asignar una familia distinta a títulos, encabezados de tabla y KPIs (por ejemplo, `Times-Roman` en títulos con `Inter` en cuerpo, o viceversa).
+- El componente `Text` admite `weight: "normal" | "semibold" | "bold"` (400, 600 y 700), aprovechando `Inter-SemiBold.ttf` para jerarquías intermedias.
 
-Si la familia solicitada en `theme.fontFamily` no está instalada, se usa Helvetica y la respuesta de `generate_pdf` incluye un warning indicando el reemplazo. Los bloques de código caen a Courier solo si JetBrains Mono no está disponible.
+## Añadir más familias
 
-Sobre licencias: Inter y JetBrains Mono se publican bajo SIL Open Font License; los textos completos están junto a los archivos. Si redistribuyes este workspace, conserva ambos archivos de licencia.
+Puedes colocar `Roboto-Regular.ttf`, `Roboto-Italic.ttf`, `Roboto-Medium.ttf` y `Roboto-Bold.ttf` en este directorio o en la ruta indicada por `PDF_MCP_FONT_DIR`.
+
+Todas las caras son opcionales: una familia se activa si existe su archivo `*-Regular.ttf`. Si la familia solicitada no está instalada, se aplica `Helvetica` (o `Courier` en código) y `generate_pdf` devuelve un `warning` explicando el reemplazo. Puedes consultar las fuentes detectadas en tiempo de ejecución con la herramienta `get_pdf_server_info`.

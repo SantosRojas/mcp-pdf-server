@@ -4,7 +4,9 @@ import { renderPdf } from '../engine/render.js';
 import { buildCodeMarkdown, codeSidecarPath, collectCodeBlocks } from '../engine/codeExport.js';
 import { validatePdfAst } from '../engine/validate.js';
 import type { GeneratePdfInput } from '../schemas/ast.js';
+import { defaultWorkspace, type WorkspaceInfo } from '../runtime/workspace.js';
 import { atomicWrite, resolveOutputFile } from '../utils/files.js';
+import { displayPath } from '../utils/paths.js';
 import { AppError } from '../utils/errors.js';
 
 interface CodeExportResult {
@@ -27,10 +29,10 @@ async function attachCodeSource(pdfBytes: Buffer, name: string, markdown: string
   return Buffer.from(await pdf.save());
 }
 
-export async function generatePdf(input: GeneratePdfInput): Promise<Record<string, unknown>> {
+export async function generatePdf(input: GeneratePdfInput, workspace: WorkspaceInfo = defaultWorkspace()): Promise<Record<string, unknown>> {
   const validation = validatePdfAst(input);
   if (!validation.valid) throw new AppError('El AST contiene errores de validación. Corrige los campos indicados y vuelve a intentarlo.', 'AST_VALIDATION_FAILED', undefined, validation.errors);
-  const targetPath = await resolveOutputFile(input.filename, input.outputDir, input.overwrite);
+  const targetPath = await resolveOutputFile(workspace, input.filename, input.outputDir, input.overwrite);
   const rendered = await renderPdf(input);
   const warnings = [...validation.warnings, ...rendered.warnings];
   let pdfBytes = rendered.bytes;
@@ -58,6 +60,8 @@ export async function generatePdf(input: GeneratePdfInput): Promise<Record<strin
   return {
     success: true,
     path: targetPath,
+    relativePath: displayPath(workspace.primaryRoot, targetPath),
+    outputDir: path.dirname(targetPath),
     filename: path.basename(targetPath),
     pages: rendered.pageCount,
     bytes: pdfBytes.byteLength,

@@ -24,10 +24,17 @@ export const componentCatalog = [
 ] as const;
 
 export const documentFeatures = {
+  outputDir: {
+    description: 'Carpeta destino del PDF. Omitir usa <workspace>/output; "." guarda en la raíz del proyecto; una ruta relativa (p. ej. "reports/2026") crea la subcarpeta dentro del proyecto; también acepta rutas absolutas dentro del workspace o PDF_MCP_ALLOWED_DIRS.'
+  },
   fixedHeader: { description: 'Cabecera repetida en todas las páginas.', properties: ['text', 'showRule', 'height'] },
   fixedFooter: { description: 'Pie repetido con texto y número de página.', properties: ['text', 'showPageNumbers', 'showRule', 'height'] },
   themes: ['corporate_blue', 'modern_minimal', 'executive_dark', 'financial_classic', 'technical_docs'],
-  fonts: ['Helvetica', 'Times-Roman', 'Courier', 'Inter', 'Roboto'],
+  fonts: {
+    families: ['Inter', 'Helvetica', 'Times-Roman', 'Courier', 'Roboto'],
+    headingFontFamily: 'Opcional en theme.headingFontFamily para combinar una fuente de títulos/KPIs distinta de la fuente de lectura (p. ej. Inter en títulos y Times-Roman en cuerpo).',
+    mono: 'JetBrainsMono (cuando está instalada en assets/fonts, con ligaduras desactivadas para copia literal) o Courier.'
+  },
   pageSizes: ['A4', 'LETTER', 'LEGAL'],
   codeExport: { description: 'Exporta el código fuente exacto (sin numeración ni cortes de wrap) como archivo .code.md al lado del PDF y/o adjunto dentro del PDF.', values: ['none', 'sidecar', 'embedded', 'both'] }
 } as const;

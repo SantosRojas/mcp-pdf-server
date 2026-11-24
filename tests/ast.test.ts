@@ -4,8 +4,15 @@ import { generatePdfInputSchema, securityPdfInputSchema, securityPdfToolInputSch
 import { getComponentSchema, validatePdfAst } from '../src/engine/validate.js';
 import { computeFlowchartLayout, cyclicFlowchartEdges, wrapFlowchartText } from '../src/engine/flowchartLayout.js';
 import { splitInlineMarkup } from '../src/engine/inlineMarkup.js';
+import { metricValueSize, mix, readableText, withAlpha } from '../src/engine/design.js';
+import { registerOptionalFonts, resolveTheme } from '../src/engine/themeProvider.js';
+import { buildWorkspace, isPathAllowed } from '../src/runtime/workspace.js';
 import { componentCatalog } from '../src/components/catalog.js';
 import { safePdfFilename } from '../src/utils/files.js';
+import { displayPath, expandHome, pathFromFileUri, splitPathList } from '../src/utils/paths.js';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const minimal = {
   filename: 'test-report',
@@ -229,4 +236,45 @@ test('keeps underscores in identifiers while parsing inline markup', () => {
   assert.ok(runs.some((run) => run.text.includes('FINALIZADO_OK')));
   assert.ok(runs.some((run) => run.kind === 'italic' && run.text === 'énfasis'));
   assert.ok(runs.some((run) => run.kind === 'bold' && run.text === 'negrita'));
+});
+
+test('splitPathList supports ; and : across platforms without breaking Windows drive letters', () => {
+  assert.deepEqual(splitPathList('/var/pdfs:/tmp/reports'), ['/var/pdfs', '/tmp/reports']);
+  assert.deepEqual(splitPathList('C:\\pdfs;D:\\reports'), ['C:\\pdfs', 'D:\\reports']);
+  assert.deepEqual(splitPathList('C:/pdfs:D:/reports'), ['C:/pdfs', 'D:/reports']);
+  assert.equal(expandHome('~/pdfs'), path.join(os.homedir(), 'pdfs'));
+});
+
+test('buildWorkspace prioritizes MCP roots and allows writing anywhere inside the workspace', () => {
+  const projectDir = path.join(os.tmpdir(), 'workspace-test-project');
+  const extraDir = path.join(os.tmpdir(), 'workspace-test-extra');
+  const uri = pathToFileURL(projectDir).href;
+  const fromUri = pathFromFileUri(uri);
+  assert.ok(fromUri);
+  const ws = buildWorkspace([fromUri!], { outputDirSetting: undefined, extraAllowedDirs: [extraDir], allowAnyPath: false });
+  assert.equal(ws.source, 'mcp-roots');
+  assert.ok(isPathAllowed(ws, path.join(ws.primaryRoot, 'reports', '2026', 'ventas.pdf')));
+  assert.ok(isPathAllowed(ws, path.join(ws.outputDir, 'ventas.pdf')));
+  assert.ok(isPathAllowed(ws, path.join(extraDir, 'externo.pdf')));
+  assert.equal(displayPath(ws.primaryRoot, path.join(ws.primaryRoot, 'reports', 'ventas.pdf')), 'reports/ventas.pdf');
+});
+
+test('resolves Inter, headingFontFamily, JetBrainsMono and derived design palettes', async () => {
+  await registerOptionalFonts();
+  const parsed = generatePdfInputSchema.parse({
+    filename: 'theme-check',
+    theme: { preset: 'executive_dark', headingFontFamily: 'Times-Roman' },
+    content: [{ type: 'Text', text: 'Texto en semibold', weight: 'semibold' }]
+  });
+  assert.equal(parsed.theme.fontFamily, 'Inter');
+  const { theme, warnings } = resolveTheme(parsed.theme);
+  assert.equal(warnings.length, 0);
+  assert.equal(theme.font, 'Inter');
+  assert.equal(theme.heading, 'Times-Roman');
+  assert.equal(theme.mono, 'JetBrainsMono');
+  assert.equal(theme.onPrimary, '#FFFFFF');
+  assert.equal(readableText('#F8FAFC'), '#17212F');
+  assert.match(withAlpha('#2F75B5', 0.12), /^rgba\(/);
+  assert.match(mix('#173B67', '#FFFFFF', 0.5), /^#[0-9a-f]{6}$/i);
+  assert.ok(metricValueSize('S/ 1,245,800.00 (consolidado)') < metricValueSize('S/ 120'));
 });

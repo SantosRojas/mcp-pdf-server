@@ -1,23 +1,63 @@
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { canonicalPathSync, resolveUserPath, splitPathList } from './utils/paths.js';
 
 /**
  * Installation directory of the server (the folder that contains package.json/dist).
  * Immutable resources such as .env, assets and fonts are resolved from here, so the
  * server behaves identically no matter which project folder starts the process.
  */
-const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+export const serverRoot = canonicalPathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 
 /**
- * Client workspace (the folder OpenCode starts the MCP server from). Generated PDFs
- * default to <workspace>/output, which keeps artifacts next to the project that asked
- * for them. Set PDF_MCP_OUTPUT_DIR to an absolute path to override it.
+ * Folder the client process was started from. It is only a fallback: when the MCP client
+ * declares workspace roots, those are preferred so PDFs land in the project in use.
  */
-const workspaceRoot = process.cwd();
+export const workspaceRoot = canonicalPathSync(process.cwd());
+
+const require = createRequire(import.meta.url);
+const packageJson = require('../package.json') as { version?: string };
 
 // Load the server's own .env, never the client project's (which may hold unrelated secrets).
 dotenv.config({ path: process.env.DOTENV_CONFIG_PATH ?? path.join(serverRoot, '.env'), quiet: true });
+
+interface CliOverrides {
+  transport?: string;
+  host?: string;
+  port?: string;
+  outputDir?: string;
+  allowedDirs: string[];
+  allowAnyPath?: boolean;
+}
+
+/**
+ * Cross-platform CLI flag parser so scripts and MCP configs work identically on Windows,
+ * macOS and Linux without POSIX-only `VAR=value command` wrappers.
+ */
+function parseCliArgs(argv: string[]): CliOverrides {
+  const overrides: CliOverrides = { allowedDirs: [] };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === '--http') overrides.transport = 'http';
+    else if (arg === '--stdio') overrides.transport = 'stdio';
+    else if (arg === '--allow-any-path') overrides.allowAnyPath = true;
+    else if (arg.startsWith('--transport=')) overrides.transport = arg.slice('--transport='.length);
+    else if (arg === '--transport' && argv[i + 1]) overrides.transport = argv[++i]!;
+    else if (arg.startsWith('--host=')) overrides.host = arg.slice('--host='.length);
+    else if (arg === '--host' && argv[i + 1]) overrides.host = argv[++i]!;
+    else if (arg.startsWith('--port=')) overrides.port = arg.slice('--port='.length);
+    else if (arg === '--port' && argv[i + 1]) overrides.port = argv[++i]!;
+    else if (arg.startsWith('--output-dir=')) overrides.outputDir = arg.slice('--output-dir='.length);
+    else if (arg === '--output-dir' && argv[i + 1]) overrides.outputDir = argv[++i]!;
+    else if (arg.startsWith('--allow-dir=')) overrides.allowedDirs.push(...splitPathList(arg.slice('--allow-dir='.length)));
+    else if (arg === '--allow-dir' && argv[i + 1]) overrides.allowedDirs.push(...splitPathList(argv[++i]!));
+  }
+  return overrides;
+}
+
+const cli = parseCliArgs(process.argv.slice(2));
 
 function bool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined || value.trim() === '') return fallback;
@@ -29,26 +69,27 @@ function integer(value: string | undefined, fallback: number, min: number, max: 
   return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
 }
 
-function defaultOutputDir(): string {
-  // Never create C:\output or /output when the client opens at a filesystem root.
-  if (path.parse(workspaceRoot).root === workspaceRoot) return path.join(serverRoot, 'output');
-  return path.join(workspaceRoot, 'output');
-}
+const outputDirSetting = (cli.outputDir ?? process.env.PDF_MCP_OUTPUT_DIR)?.trim() || undefined;
+const extraAllowedRaw = [...splitPathList(process.env.PDF_MCP_ALLOWED_DIRS), ...cli.allowedDirs];
 
 export const config = {
-  transport: process.env.PDF_MCP_TRANSPORT ?? 'stdio',
-  host: process.env.PDF_MCP_HOST ?? '127.0.0.1',
-  port: integer(process.env.PDF_MCP_PORT, 3333, 1, 65535),
+  version: packageJson.version ?? '0.0.0',
+  transport: cli.transport ?? process.env.PDF_MCP_TRANSPORT ?? 'stdio',
+  host: cli.host ?? process.env.PDF_MCP_HOST ?? '127.0.0.1',
+  port: integer(cli.port ?? process.env.PDF_MCP_PORT, 3333, 1, 65535),
   httpPath: process.env.PDF_MCP_HTTP_PATH ?? '/mcp',
   authToken: process.env.PDF_MCP_AUTH_TOKEN ?? '',
   allowedOrigins: (process.env.PDF_MCP_ALLOWED_ORIGINS ?? 'http://localhost:3000')
     .split(',').map((x) => x.trim()).filter(Boolean),
-  // Generated files follow the client workspace; read-only resources follow the installation.
-  outputDir: process.env.PDF_MCP_OUTPUT_DIR
-    ? path.resolve(workspaceRoot, process.env.PDF_MCP_OUTPUT_DIR)
-    : defaultOutputDir(),
-  assetDir: path.resolve(serverRoot, process.env.PDF_MCP_ASSET_DIR ?? './assets'),
-  fontDir: path.resolve(serverRoot, process.env.PDF_MCP_FONT_DIR ?? './assets/fonts'),
+  // Output defaults to <workspace>/output. A relative override is resolved against the
+  // workspace root; an absolute override pins a single folder for every project.
+  outputDirSetting,
+  // Extra folders an agent may write to, on top of the workspace roots and the output dir.
+  extraAllowedDirs: extraAllowedRaw.map((item) => resolveUserPath(workspaceRoot, item)),
+  // Escape hatch for controlled environments: allow any absolute path. Off by default.
+  allowAnyPath: cli.allowAnyPath ?? bool(process.env.PDF_MCP_ALLOW_ANY_PATH, false),
+  assetDir: resolveUserPath(serverRoot, process.env.PDF_MCP_ASSET_DIR ?? './assets'),
+  fontDir: resolveUserPath(serverRoot, process.env.PDF_MCP_FONT_DIR ?? './assets/fonts'),
   maxOutputBytes: integer(process.env.PDF_MCP_MAX_OUTPUT_BYTES, 50 * 1024 * 1024, 1024, 1024 * 1024 * 1024),
   maxInputBytes: integer(process.env.PDF_MCP_MAX_INPUT_BYTES, 50 * 1024 * 1024, 1024, 1024 * 1024 * 1024),
   allowRemoteImages: bool(process.env.PDF_MCP_ALLOW_REMOTE_IMAGES, false),

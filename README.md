@@ -4,12 +4,14 @@ Servidor MCP empresarial para crear, validar, combinar y proteger documentos PDF
 
 ## Qué incluye
 
-- **5 herramientas MCP:** `list_pdf_components`, `validate_pdf_ast`, `generate_pdf`, `merge_pdfs` y `apply_pdf_security`.
-- **Motor basado en React PDF:** `@react-pdf/renderer` con salida vectorial, paginación y tipografía consistente.
+- **7 herramientas MCP pensadas para agentes de IA:** `get_pdf_server_info`, `list_pdf_components`, `validate_pdf_ast`, `generate_pdf`, `list_pdfs`, `merge_pdfs` y `apply_pdf_security`.
+- **Multiplataforma (Windows, macOS y Linux):** normalización de separadores (`/` y `\`), expansión de `~`, resolución canónica de symlinks (`/tmp` → `/private/tmp` en macOS, rutas 8.3 en Windows), escritura atómica con fallback para sistemas de archivos sin hard links, flags CLI multiplataforma (`--transport=http`, `--output-dir`, `--allow-dir`, `--allow-any-path`) y autodetección de `qpdf` en Windows (Program Files/Scoop/Chocolatey), macOS (Homebrew/MacPorts) y Linux (`/usr/bin`, `/usr/local/bin`, `/snap/bin`).
+- **Localización flexible en el proyecto activo:** soporta la capacidad **`roots` del protocolo MCP** (`roots/list` y `notifications/roots/list_changed`) además de `process.cwd()`, permitiendo guardar PDFs en cualquier carpeta del proyecto donde se esté usando el MCP (`outputDir: "."`, `"reports/2026"`, rutas absolutas dentro del proyecto o directorios adicionales en `PDF_MCP_ALLOWED_DIRS`).
+- **Motor basado en React PDF:** `@react-pdf/renderer` con salida vectorial, paginación, sistema de tokens de diseño (`src/engine/design.ts`) y tipografía editorial con **Inter** (400/600/700 + cursivas) y **JetBrains Mono** (con ligaduras desactivadas para copia literal de código) activadas por defecto.
 - **AST estricto:** Zod 4 (strict objects), límites de tamaño, tipos y validaciones de contenido; esquema JSON Schema generado desde el propio contrato; no existe `eval`, scripting, HTML o CSS arbitrario.
-- **20 componentes de dominio:** layout, encabezados, texto enriquecido, callouts, tablas, KPIs, gráficos y diagramas de flujo vectoriales, código resaltado, imágenes, QR, firmas, resumen de factura y listas.
-- **Temas predefinidos:** corporate blue, modern minimal, executive dark, financial classic y technical docs.
-- **Composición PDF:** unión de documentos y edición de metadatos con `pdf-lib`.
+- **20 componentes de dominio:** layout, encabezados, texto enriquecido, callouts, tablas, KPIs, gráficos con escala y grilla en eje Y, diagramas de flujo vectoriales, código resaltado con modos claro/oscuro de alto contraste, imágenes, QR, firmas, resumen de factura y listas.
+- **Temas predefinidos y combinación tipográfica:** `corporate_blue`, `modern_minimal`, `executive_dark`, `financial_classic` y `technical_docs`, con soporte opcional para `theme.headingFontFamily` y paletas de gráficos/callouts/diagramas derivadas dinámicamente del tema.
+- **Composición PDF:** listado, unión de documentos y edición de metadatos con `pdf-lib`.
 - **Cifrado/permisos:** qpdf AES-256 para contraseña de usuario/propietario y permisos de impresión/extracción.
 - **Activos:** conversión PNG/JPEG/WebP/SVG a PNG, timeout, límite de bytes, bloqueo de IP privadas y placeholder cuando una imagen falla.
 - **Transporte:** stdio para clientes locales y Streamable HTTP para despliegues remotos. Streamable HTTP es el transporte remoto recomendado en la línea actual del SDK; no se habilita el antiguo SSE de compatibilidad.
@@ -131,12 +133,17 @@ Después, el mismo `opencode.json` funciona en cualquier proyecto:
 
 En macOS/Linux usa `"command": ["mcp-pdf-server"]`. Si prefieres no usar `npm link`, la alternativa es `"command": ["node", "C:\\ruta\\mcp-pdf-server\\dist\\index.js"]`.
 
-Cómo se resuelven las rutas desde cualquier proyecto:
+Cómo se resuelven las rutas desde cualquier proyecto (Windows, macOS y Linux):
 
-- `.env`, `assets/` y `assets/fonts/` se leen **de la instalación del servidor**, no del proyecto que lo invoca. `QPDF_PATH`, límites y flags quedan definidos una sola vez.
-- Los PDFs se generan en **`<proyecto>/output`** (el directorio de trabajo del cliente). `outputDir` en `generate_pdf` solo puede crear subcarpetas dentro de ese sandbox.
-- Para centralizar la salida en otra carpeta, añade `"environment": { "PDF_MCP_OUTPUT_DIR": "C:\\ruta\\pdfs" }` (absoluta o relativa al workspace).
-- El `.env` del proyecto cliente **se ignora a propósito** para no mezclar secretos ajenos. Si necesitas otro archivo de entorno, define `DOTENV_CONFIG_PATH`.
+- **Detección automática del proyecto activo (`MCP roots` + `cwd`):** si el cliente MCP anuncia `roots` (`roots/list`), el servidor toma esa carpeta como raíz del proyecto aunque el proceso se haya lanzado desde otra ubicación global; si el cliente no envía `roots`, usa `process.cwd()`.
+- **Guardar en cualquier carpeta del proyecto:**
+  - Sin `outputDir`: los PDFs se guardan por defecto en **`<proyecto>/output`**.
+  - `outputDir: "."`: guarda directamente en la **raíz del proyecto**.
+  - `outputDir: "reports/2026"` (o cualquier ruta relativa con `/` o `\`): crea y usa esa subcarpeta dentro del proyecto.
+  - `outputDir` absoluto: permitido siempre que esté dentro del proyecto o de las carpetas autorizadas.
+- **Carpetas adicionales fuera del proyecto:** define `PDF_MCP_ALLOWED_DIRS` (admite `;` y `:` como separador en Windows, macOS y Linux, además de `~`) o pasa `--allow-dir=/ruta` al comando. En entornos locales de confianza puedes habilitar `PDF_MCP_ALLOW_ANY_PATH=true` (o `--allow-any-path`) para permitir cualquier ruta del sistema.
+- **Centralizar la salida por defecto:** define `PDF_MCP_OUTPUT_DIR` (o `--output-dir=...`) con una ruta relativa al proyecto o absoluta.
+- `.env`, `assets/` y `assets/fonts/` se leen **de la instalación del servidor**, no del proyecto que lo invoca. El `.env` del proyecto cliente se ignora a propósito para no mezclar secretos ajenos (`DOTENV_CONFIG_PATH` permite indicar otro archivo).
 - Si prefieres no copiar nada, declara este servidor una sola vez en la configuración global `~/.config/opencode/opencode.json`.
 
 ### Cliente stdio genérico (Claude Desktop, Cursor, VS Code, OpenCode, etc.)
@@ -173,13 +180,14 @@ Envía el bearer token configurado en `PDF_MCP_AUTH_TOKEN`.
 
 ## Flujo recomendado para un agente IA
 
-1. Invoca `list_pdf_components` con la categoría necesaria (o `all`) para descubrir el catálogo y el esquema.
-2. Construye un AST JSON con componentes estructurados. No generes HTML ni estilos arbitrarios.
-3. Invoca `validate_pdf_ast` con el documento completo.
-4. Corrige todos los errores y considera las advertencias (p. ej. columnas ausentes o imágenes externas). La validación comprueba la sintaxis de las URLs, pero no realiza peticiones de red; la descarga se intenta durante la generación y cualquier fallo deja un placeholder.
-5. Invoca `generate_pdf` y conserva `path`, `pages`, `bytes` y `warnings` de la respuesta. Para reducir iteraciones, genera primero una estructura compacta, valida y renderiza solo cuando el AST esté completo.
-6. Para documentos compuestos usa `merge_pdfs`.
-7. Para distribuir documentos protegidos usa `apply_pdf_security` con una contraseña de propietario de al menos 8 caracteres y preferiblemente una frase larga.
+1. Invoca `get_pdf_server_info` al inicio de la sesión para conocer la raíz del proyecto activo (`workspace.primaryRoot`), la carpeta de salida por defecto (`output.directory`), las carpetas permitidas (`output.allowedRoots`), las fuentes instaladas y la disponibilidad de `qpdf`.
+2. Invoca `list_pdf_components` con la categoría necesaria (o `all`) para descubrir el catálogo y el esquema.
+3. Construye un AST JSON con componentes estructurados. No generes HTML ni estilos arbitrarios.
+4. Invoca `validate_pdf_ast` con el documento completo.
+5. Corrige todos los errores y considera las advertencias (p. ej. columnas ausentes o imágenes externas). La validación comprueba la sintaxis de las URLs, pero no realiza peticiones de red; la descarga se intenta durante la generación y cualquier fallo deja un placeholder.
+6. Invoca `generate_pdf` indicando `outputDir` si el usuario pidió una carpeta específica del proyecto (por ejemplo `"."` o `"docs/informes"`), y conserva `path`, `relativePath`, `pages`, `bytes` y `warnings` de la respuesta.
+7. Para localizar PDFs ya creados en el proyecto usa `list_pdfs`; para documentos compuestos usa `merge_pdfs` (que también acepta `outputDir`).
+8. Para distribuir documentos protegidos usa `apply_pdf_security` con una contraseña de propietario de al menos 8 caracteres y preferiblemente una frase larga.
 
 El agente debería tratar el PDF generado como un artefacto que debe verificarse: abrir/renderizar una muestra, revisar número de páginas, tablas, imágenes y márgenes antes de distribuirlo.
 
@@ -256,14 +264,18 @@ Cada `SectionTitle` admite `autoNumber: true` para numerar secuencialmente los t
 
 Por defecto la herramienta conserva impresión y copia; para restringirlos debes indicar explícitamente `false`. Las restricciones de PDF son controles de interoperabilidad, no DRM absoluto: un lector o herramienta que ignore permisos puede no respetarlas.
 
-## Fuentes
+## Fuentes y sistema de estilos
 
-Se incluyen dos familias libres bajo SIL Open Font License, con sus archivos de licencia en `assets/fonts`:
+Se incluyen y activan por defecto dos familias libres bajo SIL Open Font License, con sus archivos de licencia en `assets/fonts`:
 
-- **Inter** para texto y títulos (Regular, Italic, SemiBold, Bold, BoldItalic).
-- **JetBrains Mono** para código y `código inline` (Regular, Italic, Bold).
+- **Inter** (`theme.fontFamily: "Inter"`, predeterminada) para cuerpo, subtítulos, tablas y encabezados (Regular 400, Italic 400, SemiBold 600, Bold 700, BoldItalic 700).
+- **JetBrains Mono** para `CodeBlock` y `` `código inline` `` (Regular 400, Italic 400, Bold 700), con las ligaduras OpenType (`calt`, `liga`, `clig`, `dlig`, `rlig`) desactivadas para que operadores como `<=`, `<>`, `>=`, `!=` y `=>` se copien literalmente como ASCII.
 
-Se seleccionan con `theme.fontFamily: "Inter"`; el mono se activa automáticamente cuando está instalado. Las familias Helvetica, Times-Roman y Courier siguen disponibles como base. Las caras son opcionales: una variante que falte no se sintetiza, y si la familia pedida no está instalada la respuesta incluye un warning con el reemplazo aplicado. Para añadir otras familias, consulta `assets/fonts/README.md`.
+Además:
+
+- `theme.headingFontFamily` permite combinar una fuente distinta para títulos, encabezados de tabla y KPIs (por ejemplo, `Times-Roman` en títulos e `Inter` en cuerpo).
+- `Text.weight` admite `"normal" | "semibold" | "bold"` (400, 600 y 700).
+- Las familias `Helvetica`, `Times-Roman` y `Courier` siguen disponibles como base, y `Roboto` se activa automáticamente si se añaden sus `.ttf` en `assets/fonts`. Si la familia pedida no está instalada, la respuesta incluye un `warning` con el reemplazo aplicado. Para más detalles, consulta `assets/fonts/README.md`.
 
 ## Pruebas y desarrollo
 

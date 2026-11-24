@@ -101,6 +101,32 @@ test('copying a code block from the PDF no longer carries the line numbers', asy
   assert.doesNotMatch(text, /\d/);
 });
 
+test('JetBrains Mono disables programming ligatures so operators copy as literal ASCII', async () => {
+  const parsed = generatePdfInputSchema.parse({
+    filename: `ligature-check-${process.pid}`,
+    content: [
+      {
+        type: 'Text',
+        text: 'Comparación inline: `a <= b && c <> d && e != f && g => h`'
+      },
+      {
+        type: 'CodeBlock',
+        language: 'sql',
+        code: 'SELECT * FROM dbo.Ventas WHERE total <= 100 AND estado <> 0 AND margen >= 10 AND tipo != 2; -- comentario'
+      }
+    ]
+  });
+  const { renderPdf } = await import('../src/engine/render.js');
+  const rendered = await renderPdf(parsed);
+  const text = await extractText(new Uint8Array(rendered.bytes));
+  assert.ok(text.includes('<='), `expected literal <= in extracted text: ${text}`);
+  assert.ok(text.includes('<>'), `expected literal <> in extracted text: ${text}`);
+  assert.ok(text.includes('>='), `expected literal >= in extracted text: ${text}`);
+  assert.ok(text.includes('!='), `expected literal != in extracted text: ${text}`);
+  assert.ok(text.includes('=>'), `expected literal => in extracted text: ${text}`);
+  assert.ok(text.includes('--'), `expected literal -- in extracted text: ${text}`);
+});
+
 test('lineNumberStyle=text keeps the legacy selectable gutter', async () => {
   const parsed = generatePdfInputSchema.parse({
     ...codeDocument,

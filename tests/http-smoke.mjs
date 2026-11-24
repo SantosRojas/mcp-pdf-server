@@ -32,7 +32,7 @@ function payload(result) {
   return JSON.parse(text);
 }
 
-const child = spawn(process.execPath, [path.join(root, 'dist', 'index.js')], {
+const child = spawn(process.execPath, [path.join(root, 'dist', 'index.js'), '--transport=http'], {
   cwd: root,
   env: {
     ...process.env,
@@ -92,7 +92,7 @@ try {
   await client.connect(transport);
 
   const tools = await client.listTools();
-  check('el cliente HTTP lista las 5 herramientas', tools.tools.length === 5, tools.tools.map((tool) => tool.name));
+  check('el cliente HTTP lista las 7 herramientas', tools.tools.length === 7, tools.tools.map((tool) => tool.name));
 
   const generated = await client.callTool({
     name: 'generate_pdf',

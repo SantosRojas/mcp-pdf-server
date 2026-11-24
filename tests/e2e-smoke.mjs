@@ -1,5 +1,5 @@
 // End-to-end smoke test: starts the built MCP server over stdio, exercises every
-// tool with real payloads and verifies the generated artifacts with pdf-lib.
+// tool with real payloads and verifies the generated artifacts with pdf-lib and pdfjs-dist.
 // Run after `npm run build`: node tests/e2e-smoke.mjs
 import { promises as fs } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -9,10 +9,11 @@ import 'dotenv/config';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { PDFDocument } from 'pdf-lib';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const outputDir = path.join(root, 'output');
-const qpdfPath = process.env.QPDF_PATH || 'qpdf';
+let qpdfPath = process.env.QPDF_PATH || 'qpdf';
 const failures = [];
 let checks = 0;
 
@@ -29,26 +30,21 @@ function qpdf(args) {
   return execFileSync(qpdfPath, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-// Extracts the text drawn on each page by decoding the hex strings of the
-// content stream with qpdf. Used for layout regression checks.
-function pdfPageTexts(filePath) {
+// Extracts the text drawn on each page using pdfjs-dist (supports both embedded TrueType
+// CID fonts like Inter/JetBrains Mono and Base14 PDF fonts across Windows/macOS/Linux).
+async function pdfPageTexts(filePath) {
+  const bytes = new Uint8Array(await fs.readFile(filePath));
+  const task = getDocument({ data: bytes, useSystemFonts: false, isEvalSupported: false });
+  const pdf = await task.promise;
   const pages = [];
-  let current = null;
-  for (const line of qpdf(['--show-pages', filePath]).split(/\r?\n/)) {
-    const pageMatch = line.match(/^page (\d+):\s*\d+ 0 R/);
-    if (pageMatch) {
-      current = { page: Number(pageMatch[1]), contents: [] };
-      pages.push(current);
-      continue;
-    }
-    const contentMatch = line.match(/^\s+(\d+) 0 R\s*$/);
-    if (current && contentMatch) current.contents.push(contentMatch[1]);
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const content = await page.getTextContent();
+    const text = content.items.map((item) => ('str' in item ? item.str : '')).join(' ');
+    pages.push({ page: pageNumber, text });
   }
-  return pages.map(({ page, contents }) => {
-    const stream = contents.map((ref) => qpdf([`--show-object=${ref}`, '--filtered-stream-data', filePath])).join('\n');
-    const strings = stream.match(/<([0-9a-fA-F]+)>/g) ?? [];
-    return { page, text: strings.map((token) => Buffer.from(token.slice(1, -1), 'hex').toString('latin1')).join('') };
-  });
+  await task.destroy();
+  return pages;
 }
 
 function check(label, condition, detail) {
@@ -102,7 +98,13 @@ try {
 
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  check('expone las 5 herramientas esperadas', names.length === 5 && names.includes('generate_pdf'), names);
+  check('expone las 7 herramientas esperadas', names.length === 7 && names.includes('generate_pdf') && names.includes('get_pdf_server_info') && names.includes('list_pdfs'), names);
+
+  const info = await call(client, 'get_pdf_server_info', {});
+  check('get_pdf_server_info describe workspace, fuentes y capacidades', !info.isError && info.body.success === true && Array.isArray(info.body.output?.allowedRoots), info.body);
+  if (info.body?.capabilities?.qpdf?.available && info.body?.capabilities?.qpdf?.command) {
+    qpdfPath = info.body.capabilities.qpdf.command;
+  }
 
   const catalog = await call(client, 'list_pdf_components', { category: 'all' });
   check('list_pdf_components responde el catálogo', !catalog.isError && catalog.body.componentCount >= 19, catalog.body.componentCount);
@@ -113,7 +115,7 @@ try {
   check('validate_pdf_ast acepta el ejemplo', !validation.isError && validation.body.valid === true, validation.body.errors);
 
   const generated = await call(client, 'generate_pdf', { ...example, filename: 'e2e-informe-ventas', overwrite: true });
-  check('generate_pdf genera el informe de ejemplo', !generated.isError && generated.body.success === true, generated.body);
+  check('generate_pdf genera el informe de ejemplo con path y relativePath', !generated.isError && generated.body.success === true && typeof generated.body.relativePath === 'string', generated.body);
   const report = await inspectPdf(generated.body.path);
   check('el informe es un PDF con páginas', report.pages > 0 && report.bytes > 1000, report);
   check('los metadatos del PDF se aplicaron', report.title === example.metadata.title, report.title);
@@ -131,7 +133,10 @@ try {
     overwrite: true
   };
   const annex = await call(client, 'generate_pdf', annexDoc);
-  check('generate_pdf acepta un AST mínimo con QR', !annex.isError && annex.body.success === true, annex.body);
+  check('generate_pdf acepta un AST mínimo con QR e Inter por defecto', !annex.isError && annex.body.success === true, annex.body);
+
+  const listed = await call(client, 'list_pdfs', { recursive: true, limit: 50 });
+  check('list_pdfs localiza los PDFs generados', !listed.isError && listed.body.count >= 2 && listed.body.files.some((f) => f.filename === 'e2e-informe-ventas.pdf'), listed.body.count);
 
   const merged = await call(client, 'merge_pdfs', {
     filePaths: [generated.body.filename, annex.body.filename],
@@ -152,17 +157,13 @@ try {
   const securedPdf = await inspectPdf(secured.body.path);
   check('los metadatos actualizados persisten', securedPdf.title === 'Documento combinado (metadatos actualizados)', securedPdf.title);
 
-  if (qpdfAvailable()) {
-    const pages = pdfPageTexts(generated.body.path);
-    const page1 = pages.find((item) => item.page === 1)?.text ?? '';
-    const page2 = pages.find((item) => item.page === 2)?.text ?? '';
-    check('la página 1 no deja cabecera de tabla huérfana', !page1.includes('Participación') && !page1.includes('Desempeño por canal'), page1.slice(-240));
-    check('la sección 3 arranca en la página 2 con cabecera y filas', page2.includes('Desempeño por canal') && page2.includes('Participación') && page2.includes('Tiendas'), page2.slice(0, 320));
-    const annexText = pdfPageTexts(annex.body.path).map((item) => item.text).join('');
-    check('el Flowchart dibuja las etiquetas de sus nodos', annexText.includes('Solicitud recibida') && annexText.includes('Documento emitido'), annexText.slice(-240));
-  } else {
-    console.log('  skip qpdf no disponible: se omite la comprobación de saltos de página');
-  }
+  const pages = await pdfPageTexts(generated.body.path);
+  const page1 = pages.find((item) => item.page === 1)?.text ?? '';
+  const page2 = pages.find((item) => item.page === 2)?.text ?? '';
+  check('la página 1 no deja cabecera de tabla huérfana', !page1.includes('Participación') && !page1.includes('Desempeño por canal'), page1.slice(-240));
+  check('la sección 3 arranca en la página 2 con cabecera y filas', page2.includes('Desempeño por canal') && page2.includes('Participación') && page2.includes('Tiendas'), page2.slice(0, 320));
+  const annexText = (await pdfPageTexts(annex.body.path)).map((item) => item.text).join(' ');
+  check('el Flowchart dibuja las etiquetas de sus nodos', annexText.includes('Solicitud recibida') && annexText.includes('Documento emitido'), annexText.slice(-240));
 
   const restricted = await call(client, 'apply_pdf_security', {
     filePath: merged.body.filename,
@@ -201,7 +202,7 @@ try {
   }
 
   const traversal = await call(client, 'generate_pdf', { ...example, filename: 'e2e-escape', outputDir: '..', overwrite: true });
-  check('el sandbox rechaza outputDir fuera de PDF_MCP_OUTPUT_DIR', traversal.isError && JSON.stringify(traversal.body).includes('PATH_OUTSIDE_SANDBOX'), traversal.body);
+  check('el sandbox rechaza outputDir fuera del workspace permitido', traversal.isError && JSON.stringify(traversal.body).includes('PATH_OUTSIDE_SANDBOX'), traversal.body);
 
   const invalid = await call(client, 'validate_pdf_ast', { filename: 'x', content: [{ type: 'Text', text: 'hola', onClick: 'alert(1)' }] });
   check('validate_pdf_ast reporta propiedades no permitidas', !invalid.isError && invalid.body.valid === false, invalid.body.errors);

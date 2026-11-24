@@ -8,17 +8,23 @@ El modelo debe producir un documento correcto a partir de datos y requisitos, no
 
 ## Flujo obligatorio
 
-1. **Descubrir una vez por tipo de documento:** llamar `list_pdf_components` con la categoría relevante. Consultar `all` solo al diseñar un documento nuevo o cuando el esquema haya cambiado.
-2. **Planificar antes de serializar:** identificar secciones, tablas, métricas, visualizaciones, anexos y saltos de página. No repetir estilos disponibles en el tema.
-3. **Construir el AST:** emitir solo propiedades documentadas. Usar componentes compuestos (`DataTable`, `MetricCard`, `InvoiceSummary`, `Chart`, `CodeBlock`) en vez de simularlos con muchos `View` y `Text`.
-4. **Validar:** llamar `validate_pdf_ast` con el documento completo. Resolver todos los errores y revisar advertencias.
-5. **Generar:** llamar `generate_pdf` una vez que la validación sea correcta. Usar `overwrite=false` por defecto.
-6. **Verificar:** revisar el número de páginas, el tamaño y las advertencias devueltas. Cuando el cliente tenga acceso al archivo, inspeccionar la portada y páginas con tablas/gráficos antes de distribuirlo.
-7. **Componer/proteger:** usar `merge_pdfs` y `apply_pdf_security` solo cuando sean necesarios. Nunca incluir contraseñas en el contenido del documento.
+1. **Inspeccionar el entorno una vez por sesión (`get_pdf_server_info`):** devuelve el `workspace.primaryRoot` detectado (por MCP `roots` o `cwd`), la carpeta de salida por defecto (`output.directory`), las raíces permitidas (`output.allowedRoots`), las fuentes instaladas (`Inter`, `JetBrainsMono`, etc.) y si `qpdf` está disponible para cifrado.
+2. **Descubrir componentes por categoría (`list_pdf_components`):** llamar con la categoría relevante (`layout`, `typography`, `data`, `technical`, `media` o `all`).
+3. **Planificar antes de serializar:** identificar secciones, tablas, métricas, visualizaciones, anexos y saltos de página. No repetir estilos disponibles en el tema.
+4. **Construir el AST:** emitir solo propiedades documentadas. Usar componentes compuestos (`DataTable`, `MetricCard`, `InvoiceSummary`, `Chart`, `Flowchart`, `CodeBlock`) en vez de simularlos con muchos `View` y `Text`.
+5. **Validar (`validate_pdf_ast`):** pasar el documento completo. Resolver todos los errores y revisar advertencias.
+6. **Generar (`generate_pdf`):** elegir `outputDir` según dónde lo necesite el usuario:
+   - Omitir `outputDir` para guardar en `<proyecto>/output`.
+   - `outputDir: "."` para guardar en la raíz del proyecto activo.
+   - `outputDir: "reports/2026"` (o cualquier ruta relativa) para guardar en una subcarpeta del proyecto.
+   - Una ruta absoluta dentro del workspace o de `PDF_MCP_ALLOWED_DIRS`.
+   La respuesta incluye `path` (absoluto) y `relativePath` (relativo al proyecto).
+7. **Localizar, componer y proteger (`list_pdfs`, `merge_pdfs`, `apply_pdf_security`):** usar `list_pdfs` para descubrir PDFs existentes en el proyecto sin adivinar rutas, y luego `merge_pdfs` o `apply_pdf_security` cuando sea necesario. Nunca incluir contraseñas en el contenido del documento.
 
 ## Reglas de eficiencia de tokens
 
 - Reutilizar un único tema global (`corporate_blue`, `modern_minimal`, `executive_dark`, `financial_classic` o `technical_docs`). No enviar colores por cada nodo salvo que exista una excepción justificada.
+- La fuente predeterminada es `Inter` (con variantes Regular 400, Italic, SemiBold 600, Bold 700 y BoldItalic 700) y `JetBrainsMono` (sin ligaduras, para copia literal) en código. Para un contraste editorial clásico, puedes combinar `theme.headingFontFamily` (p. ej. `"Times-Roman"` en títulos y `"Inter"` en cuerpo).
 - Preferir `DataTable` para conjuntos de registros; no crear una fila manual de `View` por cada celda.
 - Preferir `Grid` + `MetricCard` para KPIs; no construir tarjetas manualmente con decenas de propiedades.
 - Usar `KeyValueList` para metadatos y `InvoiceSummary` para importes.
@@ -127,7 +133,7 @@ Cuando `generate_pdf` devuelva advertencias, tratarlas como hallazgos: una image
 ## Límites importantes
 
 - Las imágenes remotas requieren `PDF_MCP_ALLOW_REMOTE_IMAGES=true` y solo HTTPS; las IP privadas/reservadas deben seguir bloqueadas.
-- Los archivos deben quedar dentro de `PDF_MCP_OUTPUT_DIR`; las imágenes locales, dentro de `PDF_MCP_ASSET_DIR`.
-- `apply_pdf_security` requiere `qpdf` para cifrado y restricciones. Las restricciones de impresión/copia no sustituyen controles criptográficos de distribución.
+- Los archivos pueden guardarse en cualquier carpeta del proyecto activo (detectado por MCP `roots` o `cwd`) y en las carpetas adicionales declaradas en `PDF_MCP_ALLOWED_DIRS` (o en cualquier ruta si se habilita `PDF_MCP_ALLOW_ANY_PATH=true`); las imágenes locales se leen desde `PDF_MCP_ASSET_DIR`.
+- `apply_pdf_security` requiere `qpdf` para cifrado y restricciones (auto-detectado en Windows, macOS y Linux). Las restricciones de impresión/copia no sustituyen controles criptográficos de distribución.
 - `SignatureBlock` no crea firmas criptográficas PAdES.
 - El servidor no consulta bases de datos ni llama a un LLM: el agente debe obtener/verificar los datos con sus fuentes antes de crear el AST.

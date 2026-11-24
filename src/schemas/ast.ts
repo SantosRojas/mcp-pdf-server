@@ -41,7 +41,7 @@ const textNode = z.object({
   type: z.literal('Text'), ...common,
   text: safeText, size: z.number().min(5).max(48).default(10),
   color: color.optional(), align: z.enum(['left', 'center', 'right', 'justify']).default('left'),
-  weight: z.enum(['normal', 'bold']).default('normal'), italic: z.boolean().default(false),
+  weight: z.enum(['normal', 'semibold', 'bold']).default('normal'), italic: z.boolean().default(false),
   lineHeight: z.number().min(0.8).max(3).default(1.35), marginBottom: z.number().min(0).max(100).default(6)
 }).strict();
 const calloutNode = z.object({ type: z.literal('Callout'), ...common, variant: z.enum(['info', 'warning', 'success', 'danger']).default('info'), title: z.string().max(200).optional(), content: safeText, icon: z.string().max(8).optional() }).strict();
@@ -120,8 +120,10 @@ export const settingsSchema = z.object({
 export const themeSchema = z.object({
   preset: z.enum(['corporate_blue', 'modern_minimal', 'executive_dark', 'financial_classic', 'technical_docs']).default('corporate_blue'),
   primaryColor: color.optional(), accentColor: color.optional(), mutedColor: color.optional(),
-  fontFamily: z.enum(['Helvetica', 'Times-Roman', 'Courier', 'Inter', 'Roboto']).default('Helvetica')
-}).strict().default({ preset: 'corporate_blue', fontFamily: 'Helvetica' });
+  fontFamily: z.enum(['Helvetica', 'Times-Roman', 'Courier', 'Inter', 'Roboto']).default('Inter'),
+  // Optional display face for titles/KPIs. Defaults to fontFamily when omitted or unavailable.
+  headingFontFamily: z.enum(['Helvetica', 'Times-Roman', 'Courier', 'Inter', 'Roboto']).optional()
+}).strict().default({ preset: 'corporate_blue', fontFamily: 'Inter' });
 
 const fixedHeaderSchema = z.object({ text: z.string().max(200).optional(), showRule: z.boolean().default(true), height: z.number().min(12).max(80).default(28) }).strict().optional();
 const fixedFooterSchema = z.object({ text: z.string().max(200).optional(), showPageNumbers: z.boolean().default(true), showRule: z.boolean().default(true), height: z.number().min(12).max(80).default(28) }).strict().optional();
@@ -145,6 +147,7 @@ export const validatePdfAstInputSchema = z.record(z.string(), z.unknown());
 export const mergePdfsInputSchema = z.object({
   filePaths: z.array(z.string().min(1).max(1_000)).min(2).max(50),
   outputFilename: z.string().min(1).max(120).regex(/^[\p{L}\p{N}][\p{L}\p{N} _.-]*$/u),
+  outputDir: z.string().max(1_000).optional(),
   overwrite: z.boolean().default(false)
 }).strict();
 
@@ -155,8 +158,17 @@ const securityPdfInputObjectSchema = z.object({
   permissions: z.object({ printing: z.boolean().default(true), copying: z.boolean().default(true) }).strict().default({ printing: true, copying: true }),
   metadata: z.object({ title: z.string().max(300).optional(), author: z.string().max(200).optional(), subject: z.string().max(500).optional(), keywords: z.array(z.string().max(80)).max(30).optional() }).strict().optional(),
   outputFilename: z.string().max(120).regex(/^[\p{L}\p{N}][\p{L}\p{N} _.-]*$/u).optional(),
+  outputDir: z.string().max(1_000).optional(),
   overwrite: z.boolean().default(false)
 }).strict();
+
+export const listPdfsInputSchema = z.object({
+  directory: z.string().min(1).max(1_000).optional(),
+  recursive: z.boolean().default(false),
+  limit: z.number().int().min(1).max(200).default(50)
+}).strict();
+
+export const serverInfoInputSchema = z.object({}).strict();
 
 export const securityPdfToolInputSchema = securityPdfInputObjectSchema;
 export const securityPdfInputSchema = securityPdfInputObjectSchema.superRefine((value, ctx) => {

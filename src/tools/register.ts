@@ -2,12 +2,23 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { componentCatalog, documentFeatures } from '../components/catalog.js';
 import { getComponentSchema } from '../engine/validate.js';
+import { getWorkspace } from '../runtime/workspace.js';
 import { listPdfComponents } from './listComponents.js';
 import { validateAst } from './validateAst.js';
 import { generatePdf } from './generatePdf.js';
 import { mergePdfs } from './mergePdfs.js';
 import { applyPdfSecurity } from './securityPdf.js';
-import { generatePdfInputSchema, mergePdfsInputSchema, securityPdfInputSchema, securityPdfToolInputSchema, validatePdfAstInputSchema } from '../schemas/ast.js';
+import { getServerInfo } from './serverInfo.js';
+import { listPdfs } from './listPdfs.js';
+import {
+  generatePdfInputSchema,
+  listPdfsInputSchema,
+  mergePdfsInputSchema,
+  securityPdfInputSchema,
+  securityPdfToolInputSchema,
+  serverInfoInputSchema,
+  validatePdfAstInputSchema
+} from '../schemas/ast.js';
 import { errorPayload } from '../utils/errors.js';
 import { config } from '../config.js';
 
@@ -35,6 +46,18 @@ const renderSemaphore = new Semaphore(config.maxConcurrentRenders);
 
 export function registerPdfTools(server: McpServer): void {
   server.registerTool(
+    'get_pdf_server_info',
+    {
+      description: 'Devuelve la versión del servidor, los workspace roots detectados, la carpeta de salida por defecto, las carpetas permitidas, las fuentes instaladas, los temas disponibles y el flujo recomendado. Llamar una vez al iniciar para saber exactamente dónde se guardarán los PDFs.',
+      inputSchema: serverInfoInputSchema
+    },
+    async () => {
+      try { return ok(await getServerInfo(await getWorkspace(server))); }
+      catch (error) { return fail(error); }
+    }
+  );
+
+  server.registerTool(
     'list_pdf_components',
     {
       description: 'Lista el catálogo de componentes PDF, sus categorías, propiedades requeridas/opcionales, ejemplos y esquema JSON. Consulta esta herramienta antes de construir el AST.',
@@ -51,7 +74,7 @@ export function registerPdfTools(server: McpServer): void {
   server.registerTool(
     'validate_pdf_ast',
     {
-      description: 'Valida el documento AST sin renderizar. Devuelve errores con path exacto y advertencias para autocorrección del agente.',
+      description: 'Valida el documento AST sin renderizar. Devuelve errores con path exacto y advertencias para autocorrección del agente. No escribe archivos.',
       inputSchema: validatePdfAstInputSchema
     },
     async (input) => {
@@ -65,36 +88,56 @@ export function registerPdfTools(server: McpServer): void {
   server.registerTool(
     'generate_pdf',
     {
-      description: 'Genera un PDF profesional a partir de un AST JSON declarativo. No acepta HTML, CSS, JavaScript ni código ejecutable.',
+      description: 'Genera un PDF profesional a partir de un AST JSON declarativo y lo guarda en disco. Sin outputDir usa la carpeta de salida del workspace; outputDir acepta rutas relativas al workspace (p. ej. "reports/2026") o absolutas dentro de las carpetas permitidas. Devuelve path absoluto, relativePath, páginas, tamaño y warnings. No acepta HTML, CSS, JavaScript ni código ejecutable.',
       inputSchema: generatePdfInputSchema
     },
     async (input) => {
-      try { return ok(await renderSemaphore.run(() => generatePdf(generatePdfInputSchema.parse(input)))); }
-      catch (error) { return fail(error); }
+      try {
+        const workspace = await getWorkspace(server);
+        return ok(await renderSemaphore.run(() => generatePdf(generatePdfInputSchema.parse(input), workspace)));
+      } catch (error) { return fail(error); }
+    }
+  );
+
+  server.registerTool(
+    'list_pdfs',
+    {
+      description: 'Lista los PDFs existentes en el workspace, la carpeta de salida y las carpetas permitidas, con ruta absoluta, ruta relativa, tamaño y fecha. Úsala para localizar documentos antes de merge_pdfs o apply_pdf_security en lugar de adivinar rutas.',
+      inputSchema: listPdfsInputSchema
+    },
+    async (input) => {
+      try {
+        const workspace = await getWorkspace(server);
+        return ok(await listPdfs(listPdfsInputSchema.parse(input), workspace));
+      } catch (error) { return fail(error); }
     }
   );
 
   server.registerTool(
     'merge_pdfs',
     {
-      description: 'Combina dos o más PDFs existentes dentro del directorio seguro de salida. Mantiene el orden recibido.',
+      description: 'Combina dos o más PDFs existentes en un documento nuevo, manteniendo el orden recibido. Acepta rutas absolutas permitidas o relativas al workspace, a la carpeta de salida o a las carpetas permitidas. Usa list_pdfs si no conoces las rutas.',
       inputSchema: mergePdfsInputSchema
     },
     async (input) => {
-      try { return ok(await mergePdfs(mergePdfsInputSchema.parse(input))); }
-      catch (error) { return fail(error); }
+      try {
+        const workspace = await getWorkspace(server);
+        return ok(await mergePdfs(mergePdfsInputSchema.parse(input), workspace));
+      } catch (error) { return fail(error); }
     }
   );
 
   server.registerTool(
     'apply_pdf_security',
     {
-      description: 'Actualiza metadatos y opcionalmente cifra el PDF con AES-256 y restricciones de impresión/copia. El cifrado requiere qpdf instalado.',
+      description: 'Actualiza metadatos y opcionalmente cifra el PDF con AES-256 y restricciones de impresión/copia. Acepta filePath absoluto permitido o relativo al workspace/output, y un outputDir opcional con las mismas reglas que generate_pdf. El cifrado requiere qpdf instalado.',
       inputSchema: securityPdfToolInputSchema
     },
     async (input) => {
-      try { return ok(await applyPdfSecurity(securityPdfInputSchema.parse(input)));}
-      catch (error) { return fail(error); }
+      try {
+        const workspace = await getWorkspace(server);
+        return ok(await applyPdfSecurity(securityPdfInputSchema.parse(input), workspace));
+      } catch (error) { return fail(error); }
     }
   );
 }

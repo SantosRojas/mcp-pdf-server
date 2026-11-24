@@ -14,7 +14,7 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "start:http": "PDF_MCP_TRANSPORT=http node dist/index.js",
+    "start:http": "node dist/index.js --transport=http",
     "test": "tsx --test tests/*.test.ts",
     "smoke": "node tests/e2e-smoke.mjs && node tests/cwd-smoke.mjs && node tests/http-smoke.mjs",
     "smoke:stdio": "node tests/e2e-smoke.mjs",
