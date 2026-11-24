@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { compileMarkdownToAst } from './markdownParser.js';
 
 /**
  * Exact-source export for CodeBlock components.
@@ -29,6 +30,10 @@ export function collectCodeBlocks(content: readonly unknown[], found: CodeBlockS
       };
       if (typeof record.title === 'string' && record.title.trim()) block.title = record.title;
       found.push(block);
+    }
+    if (record.type === 'Markdown' && typeof record.markdown === 'string') {
+      collectCodeBlocks(compileMarkdownToAst(record.markdown), found);
+      continue;
     }
     for (const key of ['children', 'content']) {
       const nested = record[key];

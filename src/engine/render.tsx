@@ -10,6 +10,7 @@ import { renderHighlightSpans, sliceHighlightSpans, tokenizeCodeLines } from './
 import { CodeGutter } from './codeGutter.js';
 import { CODE_LINE_HEIGHT, codeGutterWidth, computeCodeMetrics, normalizeCodeLines, wrapCodeLine } from './codeMetrics.js';
 import { splitInlineMarkup } from './inlineMarkup.js';
+import { compileMarkdownToAst } from './markdownParser.js';
 import { computeFlowchartLayout, flowchartMetrics, type ArrowDirection, type FlowchartKind, type PositionedFlowchartNode, type RoutedFlowchartEdge } from './flowchartLayout.js';
 import { registerOptionalFonts, resolveTheme, type ThemeTokens } from './themeProvider.js';
 import { LINE_HEIGHT, RADIUS, SPACE, TRACKING, TYPE, metricValueSize, mix, withAlpha } from './design.js';
@@ -90,6 +91,13 @@ export function resolveChildWidths(parentWidth: number, columns: number, gap: nu
   return resolvedWeights.map((weight) => (available * weight) / totalWeight);
 }
 
+export interface OutlineEntry {
+  id: string;
+  title: string;
+  number?: string;
+  level: number;
+}
+
 interface RenderContext {
   theme: ThemeTokens;
   locale: string;
@@ -97,6 +105,7 @@ interface RenderContext {
   images: Map<string, Buffer | null>;
   qrCodes: Map<string, Buffer | null>;
   sectionCounters: [number, number, number];
+  outline: OutlineEntry[];
   contentHeight: number;
   contentWidth: number;
   warnings: string[];
@@ -637,10 +646,12 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
       </View>;
     }
     case 'SectionTitle': {
-      const sectionNumber = n.number ?? (n.autoNumber ? nextSectionNumber(context.sectionCounters, n.level ?? 1) : undefined);
+      const sectionNumber = n._resolvedNumber ?? (n.number ?? (n.autoNumber ? nextSectionNumber(context.sectionCounters, n.level ?? 1) : undefined));
       const size = n.level === 1 ? TYPE.h1 : n.level === 2 ? TYPE.h2 : TYPE.h3;
       const weight = n.level === 1 ? 700 : 600;
-      return <View key={n.id} wrap={false} minPresenceAhead={120} style={{ marginTop: n.level === 1 ? 14 : 9, marginBottom: 7, borderBottomWidth: n.underline ? 0.75 : 0, borderBottomColor: t.border, paddingBottom: 5 }}>
+      const bookmarkLabel = sectionNumber !== undefined ? `${sectionNumber}. ${n.title}` : String(n.title);
+      const anchorId = n._anchorId ?? n.id;
+      return <View key={anchorId} {...(anchorId ? { id: anchorId } : {})} {...(n.bookmark !== false ? { bookmark: { title: bookmarkLabel } } : {})} wrap={false} minPresenceAhead={120} style={{ marginTop: n.level === 1 ? 14 : 9, marginBottom: 7, borderBottomWidth: n.underline ? 0.75 : 0, borderBottomColor: t.border, paddingBottom: 5 }}>
         <PdfText style={{ color: t.primary, fontSize: size, fontWeight: weight, fontFamily: t.heading, letterSpacing: TRACKING.heading, lineHeight: LINE_HEIGHT.tight }}>
           {sectionNumber !== undefined ? <PdfText style={{ color: t.accent }}>{`${sectionNumber}. `}</PdfText> : null}
           {n.title}
@@ -825,6 +836,31 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
         ) : null}
       </View>
     );
+    case 'TableOfContents': {
+      const maxLevel = n.maxLevel ?? 3;
+      const items = context.outline.filter((entry) => entry.level <= maxLevel);
+      const defaultTitle = context.locale.toLowerCase().startsWith('en') ? 'Table of Contents' : 'Índice de Contenidos';
+      return (
+        <View key={n.id} style={{ marginVertical: SPACE.lg, padding: SPACE.lg, backgroundColor: t.surface, borderRadius: RADIUS.md, borderWidth: 0.5, borderColor: t.border }}>
+          <PdfText style={{ color: t.primary, fontSize: TYPE.h2, fontWeight: 700, marginBottom: SPACE.md, letterSpacing: TRACKING.heading, fontFamily: t.heading }}>{n.title ?? defaultTitle}</PdfText>
+          {items.map((entry, idx) => {
+            const indent = (entry.level - 1) * 14;
+            const labelText = entry.number !== undefined ? `${entry.number}. ${entry.title}` : entry.title;
+            return (
+              <View key={idx} wrap={false} style={{ flexDirection: 'row', alignItems: 'center', marginLeft: indent, paddingVertical: 3, borderBottomWidth: 0.4, borderBottomColor: t.border }}>
+                <Link src={`#${entry.id}`} style={{ color: entry.level === 1 ? t.primary : t.text, textDecoration: 'none', fontSize: entry.level === 1 ? TYPE.small : TYPE.caption + 0.5, fontWeight: entry.level === 1 ? 700 : 400, fontFamily: entry.level === 1 ? t.heading : t.font }}>
+                  {labelText}
+                </Link>
+              </View>
+            );
+          })}
+        </View>
+      );
+    }
+    case 'Markdown': {
+      const compiled = compileMarkdownToAst(String(n.markdown));
+      return <View key={n.id}>{compiled.map((child, idx) => <React.Fragment key={idx}>{renderNode(child, context)}</React.Fragment>)}</View>;
+    }
     case 'Flowchart': return <View key={n.id} wrap={false} style={{ marginVertical: SPACE.md }}>
       {n.title ? <PdfText style={{ fontSize: TYPE.small + 0.5, fontWeight: 600, color: t.primary, marginBottom: SPACE.sm, textAlign: n.titleAlign, letterSpacing: TRACKING.heading, fontFamily: t.heading }}>{n.title}</PdfText> : null}
       <View style={{ alignItems: 'center' }}><FlowchartGraphic node={n} context={context} /></View>
@@ -832,6 +868,85 @@ function renderNode(node: ComponentNode, context: RenderContext): React.ReactNod
     </View>;
     default: throw new AppError(`Componente no implementado: ${String(n.type)}`, 'UNSUPPORTED_COMPONENT', `content.${n.id ?? 'unknown'}`);
   }
+}
+
+function renderCoverPage(node: any, context: RenderContext, pageSize: any, orientation: any, pageMargins: { top: number; bottom: number; left: number; right: number }): React.ReactElement {
+  const t = context.theme;
+  const logo = node.logoUrl ? context.images.get(node.logoUrl) : null;
+  return (
+    <Page size={pageSize} orientation={orientation} style={{ paddingTop: pageMargins.top + 18, paddingBottom: pageMargins.bottom, paddingLeft: pageMargins.left, paddingRight: pageMargins.right, fontFamily: t.font, color: t.text, justifyContent: 'space-between' }}>
+      <View>
+        <View style={{ width: 72, height: 4, backgroundColor: t.accent, borderRadius: RADIUS.sm, marginBottom: SPACE.xxl }} />
+        {logo ? <PdfImage src={logo} style={{ width: 64, height: 64, objectFit: 'contain', marginBottom: SPACE.xl }} /> : null}
+        {node.eyebrow ? (
+          <View style={{ alignSelf: 'flex-start', backgroundColor: t.surface, borderWidth: 0.75, borderColor: t.border, borderRadius: RADIUS.pill, paddingHorizontal: 10, paddingVertical: 4, marginBottom: SPACE.lg }}>
+            <PdfText style={{ color: t.accent, fontSize: TYPE.caption, fontWeight: 700, letterSpacing: TRACKING.caps, fontFamily: t.heading }}>{node.eyebrow}</PdfText>
+          </View>
+        ) : null}
+        <PdfText style={{ color: t.primary, fontSize: 28, fontWeight: 700, lineHeight: 1.15, letterSpacing: TRACKING.display, fontFamily: t.heading }}>{node.title}</PdfText>
+        {node.subtitle ? (
+          <PdfText style={{ color: t.muted, fontSize: 13, lineHeight: 1.45, marginTop: SPACE.lg, fontFamily: t.font }}>{textRuns(node.subtitle, t.mono, 13, t.primary, t.accent)}</PdfText>
+        ) : null}
+      </View>
+      <View>
+        {Array.isArray(node.meta) && node.meta.length > 0 ? (
+          <View style={{ borderTopWidth: 1, borderTopColor: t.border, paddingTop: SPACE.lg, flexDirection: 'row', flexWrap: 'wrap', gap: SPACE.xl }}>
+            {node.meta.map((item: { label: string; value: string }, idx: number) => (
+              <View key={idx} style={{ minWidth: 140, marginBottom: SPACE.sm }}>
+                <PdfText style={{ color: t.muted, fontSize: TYPE.micro, letterSpacing: TRACKING.caps, marginBottom: 2, fontFamily: t.font }}>{item.label}</PdfText>
+                <PdfText style={{ color: t.text, fontSize: TYPE.small + 0.5, fontWeight: 600, fontFamily: t.heading }}>{item.value}</PdfText>
+              </View>
+            ))}
+          </View>
+        ) : null}
+        {node.footerNote ? (
+          <PdfText style={{ color: t.muted, fontSize: TYPE.caption, marginTop: SPACE.lg, fontFamily: t.font }}>{node.footerNote}</PdfText>
+        ) : null}
+      </View>
+    </Page>
+  );
+}
+
+function expandAndIndexContent(nodes: readonly ComponentNode[]): { expanded: any[]; outline: OutlineEntry[] } {
+  const counters: [number, number, number] = [0, 0, 0];
+  const outline: OutlineEntry[] = [];
+  let anchorSeq = 0;
+
+  const transformList = (items: readonly any[]): any[] => {
+    const out: any[] = [];
+    for (const raw of items) {
+      if (!raw || typeof raw !== 'object') continue;
+      if (raw.type === 'Markdown' && typeof raw.markdown === 'string') {
+        out.push(...transformList(compileMarkdownToAst(raw.markdown)));
+        continue;
+      }
+      if (raw.type === 'SectionTitle') {
+        anchorSeq += 1;
+        const anchorId = raw.id ?? `sec-${anchorSeq}`;
+        const resolvedNum = raw.number !== undefined
+          ? String(raw.number)
+          : raw.autoNumber
+            ? nextSectionNumber(counters, raw.level ?? 1)
+            : undefined;
+        outline.push({
+          id: anchorId,
+          title: String(raw.title),
+          ...(resolvedNum !== undefined ? { number: resolvedNum } : {}),
+          level: raw.level ?? 1
+        });
+        out.push({ ...raw, _anchorId: anchorId, ...(resolvedNum !== undefined ? { _resolvedNumber: resolvedNum } : {}) });
+        continue;
+      }
+      if (Array.isArray(raw.children)) {
+        out.push({ ...raw, children: transformList(raw.children) });
+        continue;
+      }
+      out.push(raw);
+    }
+    return out;
+  };
+
+  return { expanded: transformList(nodes), outline };
 }
 
 async function prepareQrCodes(nodes: unknown[]): Promise<{ codes: Map<string, Buffer | null>; warnings: string[] }> {
@@ -869,16 +984,16 @@ export interface RenderOptions {
   };
 }
 
-export interface RenderResult { bytes: Buffer; pageCount: number; warnings: string[] }
+export interface RenderResult { bytes: Buffer; pageCount: number; warnings: string[]; outline: OutlineEntry[] }
 
 export async function renderPdf(input: GeneratePdfInput, options?: RenderOptions): Promise<RenderResult> {
   await registerOptionalFonts();
   const { theme, warnings: fontWarnings } = resolveTheme(input.theme);
-  const [{ images, warnings }, { codes: qrCodes, warnings: qrWarnings }] = await Promise.all([prepareImages(input.content), prepareQrCodes(input.content)]);
+  const { expanded, outline } = expandAndIndexContent(input.content);
+  const [{ images, warnings }, { codes: qrCodes, warnings: qrWarnings }] = await Promise.all([prepareImages(expanded), prepareQrCodes(expanded)]);
   warnings.push(...fontWarnings, ...qrWarnings);
   const docLocale = input.settings.locale ?? 'es-PE';
   const ui = resolveUiStrings(docLocale);
-  const context: RenderContext = { theme, locale: docLocale, ui, images, qrCodes, sectionCounters: [0, 0, 0], contentHeight: 0, contentWidth: 0, warnings };
   const pageMargins = input.settings.margins;
   const chromeOffset = 18;
   const chromeGap = 12;
@@ -888,23 +1003,77 @@ export async function renderPdf(input: GeneratePdfInput, options?: RenderOptions
   const paddingBottom = input.fixedFooter
     ? Math.max(pageMargins.bottom, chromeOffset + input.fixedFooter.height + chromeGap)
     : pageMargins.bottom;
-  const pageDimensions = PAGE_DIMENSIONS[input.settings.pageSize] ?? PAGE_DIMENSIONS.A4!;
-  const pageHeight = input.settings.orientation === 'landscape' ? pageDimensions.width : pageDimensions.height;
-  const pageWidth = input.settings.orientation === 'landscape' ? pageDimensions.height : pageDimensions.width;
-  context.contentHeight = Math.max(120, pageHeight - paddingTop - paddingBottom - 12);
-  context.contentWidth = Math.max(160, pageWidth - pageMargins.left - pageMargins.right);
-  const content = input.content.map((node: ComponentNode, index: number) => <React.Fragment key={index}>{renderNode(node, context)}</React.Fragment>);
 
-  const doc = (
-    <Document
-      title={input.metadata?.title ?? input.filename}
-      author={input.metadata?.author ?? 'MCP PDF Server'}
-      {...(input.metadata?.subject ? { subject: input.metadata.subject } : {})}
-      {...(input.metadata?.keywords?.length ? { keywords: input.metadata.keywords.join(', ') } : {})}
-      creator="mcp-pdf-server"
-      producer="mcp-pdf-server / @react-pdf/renderer"
-    >
-      <Page size={input.settings.pageSize} orientation={input.settings.orientation} style={{ paddingTop, paddingBottom, paddingLeft: pageMargins.left, paddingRight: pageMargins.right, fontFamily: theme.font, fontSize: 9, color: theme.text }}>
+  const baseContext: RenderContext = {
+    theme,
+    locale: docLocale,
+    ui,
+    images,
+    qrCodes,
+    sectionCounters: [0, 0, 0],
+    outline,
+    contentHeight: 0,
+    contentWidth: 0,
+    warnings
+  };
+
+  type PageSegment =
+    | { kind: 'cover'; node: any }
+    | { kind: 'body'; pageSize: any; orientation: 'portrait' | 'landscape'; nodes: any[] };
+
+  const segments: PageSegment[] = [];
+  for (const item of expanded) {
+    if (item.type === 'CoverPage') {
+      segments.push({ kind: 'cover', node: item });
+    } else if (item.type === 'Section') {
+      segments.push({
+        kind: 'body',
+        pageSize: item.pageSize ?? input.settings.pageSize,
+        orientation: item.orientation ?? input.settings.orientation,
+        nodes: item.children ?? []
+      });
+    } else {
+      const last = segments[segments.length - 1];
+      if (last && last.kind === 'body' && last.pageSize === input.settings.pageSize && last.orientation === input.settings.orientation) {
+        last.nodes.push(item);
+      } else {
+        segments.push({
+          kind: 'body',
+          pageSize: input.settings.pageSize,
+          orientation: input.settings.orientation,
+          nodes: [item]
+        });
+      }
+    }
+  }
+
+  const watermarkColor = input.settings.watermark
+    ? mix(theme.primary, '#FFFFFF', 1 - Math.min(0.3, Math.max(0.02, input.settings.watermark.opacity ?? 0.07)))
+    : undefined;
+
+  const pageElements = segments.map((seg, segIndex) => {
+    if (seg.kind === 'cover') {
+      return <React.Fragment key={`seg-${segIndex}`}>{renderCoverPage(seg.node, baseContext, input.settings.pageSize, input.settings.orientation, pageMargins)}</React.Fragment>;
+    }
+    const dims = PAGE_DIMENSIONS[seg.pageSize] ?? PAGE_DIMENSIONS.A4!;
+    const pHeight = seg.orientation === 'landscape' ? dims.width : dims.height;
+    const pWidth = seg.orientation === 'landscape' ? dims.height : dims.width;
+    const segContext: RenderContext = {
+      ...baseContext,
+      contentHeight: Math.max(120, pHeight - paddingTop - paddingBottom - 12),
+      contentWidth: Math.max(160, pWidth - pageMargins.left - pageMargins.right)
+    };
+    const segContent = seg.nodes.map((node: ComponentNode, idx: number) => <React.Fragment key={idx}>{renderNode(node, segContext)}</React.Fragment>);
+
+    return (
+      <Page key={`seg-${segIndex}`} size={seg.pageSize} orientation={seg.orientation} style={{ paddingTop, paddingBottom, paddingLeft: pageMargins.left, paddingRight: pageMargins.right, fontFamily: theme.font, fontSize: 9, color: theme.text }}>
+        {input.settings.watermark && watermarkColor ? (
+          <View fixed style={{ position: 'absolute', top: pHeight * 0.44, left: 0, width: pWidth, alignItems: 'center' }}>
+            <PdfText style={{ color: watermarkColor, fontSize: 54, fontWeight: 700, letterSpacing: 4, fontFamily: theme.heading, transform: 'rotate(-35deg)' }}>
+              {input.settings.watermark.text}
+            </PdfText>
+          </View>
+        ) : null}
         {input.fixedHeader ? (
           <View fixed style={{ position: 'absolute', top: chromeOffset, left: pageMargins.left, right: pageMargins.right, height: input.fixedHeader.height, justifyContent: 'center' }}>
             <PdfText
@@ -921,7 +1090,7 @@ export async function renderPdf(input: GeneratePdfInput, options?: RenderOptions
             ) : null}
           </View>
         ) : null}
-        {content}
+        {segContent}
         {input.fixedFooter ? (
           <View fixed style={{ position: 'absolute', bottom: chromeOffset, left: pageMargins.left, right: pageMargins.right, height: input.fixedFooter.height, justifyContent: 'center' }}>
             {input.fixedFooter.showRule ? (
@@ -941,6 +1110,20 @@ export async function renderPdf(input: GeneratePdfInput, options?: RenderOptions
           </View>
         ) : null}
       </Page>
+    );
+  });
+
+  const doc = (
+    <Document
+      title={input.metadata?.title ?? input.filename}
+      author={input.metadata?.author ?? 'MCP PDF Server'}
+      {...(input.metadata?.subject ? { subject: input.metadata.subject } : {})}
+      {...(input.metadata?.keywords?.length ? { keywords: input.metadata.keywords.join(', ') } : {})}
+      {...(outline.length > 0 ? { pageMode: 'useOutlines' as const } : {})}
+      creator="mcp-pdf-server"
+      producer="mcp-pdf-server / @react-pdf/renderer"
+    >
+      {pageElements}
     </Document>
   );
 
@@ -975,5 +1158,5 @@ export async function renderPdf(input: GeneratePdfInput, options?: RenderOptions
     });
     bytes = Buffer.from(await parsed.save());
   }
-  return { bytes, pageCount, warnings };
+  return { bytes, pageCount, warnings, outline };
 }

@@ -37,7 +37,7 @@ const documentHeaderNode = z.object({
   logoUrl: z.string().max(2048).optional(), badgeText: z.string().max(80).optional(),
   alignment: z.enum(['left', 'center', 'right']).default('left')
 }).strict();
-const sectionTitleNode = z.object({ type: z.literal('SectionTitle'), ...common, title: z.string().min(1).max(300), number: z.union([z.string().min(1).max(20), z.number().int().min(1)]).optional(), autoNumber: z.boolean().default(false), level: z.number().int().min(1).max(3).default(1), underline: z.boolean().default(true) }).strict();
+const sectionTitleNode = z.object({ type: z.literal('SectionTitle'), ...common, title: z.string().min(1).max(300), number: z.union([z.string().min(1).max(20), z.number().int().min(1)]).optional(), autoNumber: z.boolean().default(false), level: z.number().int().min(1).max(3).default(1), underline: z.boolean().default(true), bookmark: z.boolean().default(true) }).strict();
 const textNode = z.object({
   type: z.literal('Text'), ...common,
   text: safeText, size: z.number().min(5).max(48).default(10),
@@ -158,18 +158,51 @@ const flowchartNode = z.object({
   caption: z.string().max(300).optional()
 }).strict();
 
+const coverPageNode = z.object({
+  type: z.literal('CoverPage'), ...common,
+  eyebrow: z.string().max(120).optional(),
+  title: z.string().min(1).max(300),
+  subtitle: z.string().max(600).optional(),
+  logoUrl: z.string().max(2048).optional(),
+  meta: z.array(z.object({ label: z.string().min(1).max(100), value: z.string().min(1).max(300) }).strict()).max(12).optional(),
+  footerNote: z.string().max(300).optional()
+}).strict();
+
+const tableOfContentsNode = z.object({
+  type: z.literal('TableOfContents'), ...common,
+  title: z.string().max(200).optional(),
+  maxLevel: z.union([z.literal(1), z.literal(2), z.literal(3)]).default(3)
+}).strict();
+
+const markdownNode = z.object({
+  type: z.literal('Markdown'), ...common,
+  markdown: z.string().min(1).max(200_000)
+}).strict();
+
+const sectionNode: z.ZodObject<z.ZodRawShape> = z.object({
+  type: z.literal('Section'), ...common,
+  orientation: z.enum(['portrait', 'landscape']).optional(),
+  pageSize: z.enum(['A4', 'LETTER', 'LEGAL']).optional(),
+  children: z.array(z.lazy(() => componentNodeSchema)).min(1).max(300)
+}).strict();
+
 export const componentNodeSchema = z.lazy(() => z.discriminatedUnion('type', [
   pageBreakNode, viewNode, gridNode, spacerNode, dividerNode, documentHeaderNode,
   sectionTitleNode, textNode, calloutNode, dataTableNode, keyValueListNode,
   metricCardNode, chartNode, codeBlockNode, imageNode, qrCodeNode,
   signatureBlockNode, invoiceSummaryNode, bulletListNode, flowchartNode,
-  badgeNode, timelineNode, quoteNode
+  badgeNode, timelineNode, quoteNode, coverPageNode, tableOfContentsNode,
+  markdownNode, sectionNode
 ]));
 
 export const settingsSchema = z.object({
   pageSize: z.enum(['A4', 'LETTER', 'LEGAL']).default('A4'),
   orientation: z.enum(['portrait', 'landscape']).default('portrait'),
   locale: z.string().min(2).max(40).default('es-PE'),
+  watermark: z.object({
+    text: z.string().min(1).max(60),
+    opacity: z.number().min(0.02).max(0.3).default(0.07)
+  }).strict().optional(),
   // Code blocks are rendered without a selectable gutter, but wrapped rows still break the
   // text layer. This option exports the exact sources so they can be copied verbatim.
   codeExport: z.enum(['none', 'sidecar', 'embedded', 'both']).default('none'),

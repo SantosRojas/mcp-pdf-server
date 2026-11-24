@@ -251,6 +251,7 @@ export function collectImageSources(nodes: unknown[]): string[] {
     const record = value as Record<string, unknown>;
     if (record.type === 'Image' && typeof record.src === 'string') found.add(record.src);
     if (record.type === 'DocumentHeader' && typeof record.logoUrl === 'string') found.add(record.logoUrl);
+    if (record.type === 'CoverPage' && typeof record.logoUrl === 'string') found.add(record.logoUrl);
     for (const child of Object.values(record)) visit(child);
   };
   nodes.forEach(visit);

@@ -91,6 +91,16 @@ export function validateSemanticAst(parsed: GeneratePdfInput): { valid: boolean;
         uniqueImages.add(node.logoUrl);
         validateImageSource(node.logoUrl, `${current}.logoUrl`, errors, warnings);
       }
+      if (node.type === 'CoverPage' && typeof node.logoUrl === 'string') {
+        uniqueImages.add(node.logoUrl);
+        validateImageSource(node.logoUrl, `${current}.logoUrl`, errors, warnings);
+      }
+      if (node.type === 'Section' && parent !== 'content') {
+        errors.push({ path: current, message: 'Section solo puede ubicarse en el nivel raíz de content.', code: 'NESTED_SECTION_NOT_ALLOWED' });
+      }
+      if (node.type === 'CoverPage' && parent !== 'content') {
+        errors.push({ path: current, message: 'CoverPage solo puede ubicarse en el nivel raíz de content.', code: 'NESTED_COVER_NOT_ALLOWED' });
+      }
       if (node.type === 'QRCode' && typeof node.value === 'string') {
         uniqueQrs.add(node.value);
       }
